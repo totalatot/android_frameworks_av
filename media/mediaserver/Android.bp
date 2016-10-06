@@ -54,6 +54,9 @@ soong_config_module_type {
 
 mediaserver_cc_binary {
     name: "mediaserver",
+    defaults: [
+        "camera_in_mediaserver_defaults",
+    ],
 
     srcs: ["main_mediaserver.cpp"],
 
