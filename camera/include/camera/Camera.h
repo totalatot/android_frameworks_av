@@ -84,6 +84,10 @@ public:
                                 const String16& clientPackageName,
                                 int clientUid, int clientPid, int targetSdkVersion);
 
+    static  status_t  connectLegacy(int cameraId, int halVersion,
+                                     const String16& clientPackageName,
+                                     int clientUid, int clientPid, sp<Camera>& camera);
+
             virtual     ~Camera();
 
             status_t    reconnect();
