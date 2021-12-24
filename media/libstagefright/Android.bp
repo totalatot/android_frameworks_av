@@ -358,6 +358,7 @@ cc_library {
         "-Werror",
         "-Wno-error=deprecated-declarations",
         "-Wall",
+        "-DBOARD_CANT_REALLOCATE_OMX_BUFFERS",
     ],
 
     version_script: "exports.lds",
