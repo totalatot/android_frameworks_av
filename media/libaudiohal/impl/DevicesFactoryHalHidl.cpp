@@ -124,9 +124,20 @@ status_t DevicesFactoryHalHidl::openDevice(const char *name, sp<DeviceHalInterfa
             // thus openPrimaryDevice must be used.
 #if MAJOR_VERSION == 7 && MINOR_VERSION == 1
             ret = factory->openPrimaryDevice_7_1(
+#elif MAJOR_VERSION < 4
+            ret = factory->openDevice(
+                    hidlId,
+                    [&](Result r,
+                        const sp<::android::hardware::audio::CPP_VERSION::IDevice>& result) {
+                        retval = r;
+                        if (retval == Result::OK) {
+                            *device = new DeviceHalHidl(result);
+                        }
+                    });
 #else
             ret = factory->openPrimaryDevice(
 #endif
+#if MAJOR_VERSION > 2
                     [&](Result r,
                         const sp<::android::hardware::audio::CPP_VERSION::IPrimaryDevice>& result) {
                         retval = r;
@@ -134,6 +145,7 @@ status_t DevicesFactoryHalHidl::openDevice(const char *name, sp<DeviceHalInterfa
                             *device = new DeviceHalHidl(result);
                         }
                     });
+#endif
         } else {
 #if MAJOR_VERSION == 7 && MINOR_VERSION == 1
             ret = factory->openDevice_7_1(

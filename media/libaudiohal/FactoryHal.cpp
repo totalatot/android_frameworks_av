@@ -50,7 +50,7 @@ using InterfaceName = std::pair<std::string, std::string>;
  * This list need to keep sync with AudioHalVersionInfo.VERSIONS in
  * media/java/android/media/AudioHalVersionInfo.java.
  */
-static const std::array<AudioHalVersionInfo, 5> sAudioHALVersions = {
+static const std::array<AudioHalVersionInfo, 6> sAudioHALVersions = {
     // TODO: remove this comment to get AIDL
     // AudioHalVersionInfo(AudioHalVersionInfo::Type::AIDL, 1, 0),
     AudioHalVersionInfo(AudioHalVersionInfo::Type::HIDL, 7, 1),
@@ -58,6 +58,7 @@ static const std::array<AudioHalVersionInfo, 5> sAudioHALVersions = {
     AudioHalVersionInfo(AudioHalVersionInfo::Type::HIDL, 6, 0),
     AudioHalVersionInfo(AudioHalVersionInfo::Type::HIDL, 5, 0),
     AudioHalVersionInfo(AudioHalVersionInfo::Type::HIDL, 4, 0),
+    AudioHalVersionInfo(AudioHalVersionInfo::Type::HIDL, 2, 0),
 };
 
 static const std::map<AudioHalVersionInfo::Type, InterfaceName> sDevicesHALInterfaces = {
