@@ -609,6 +609,8 @@ Status AudioPolicyService::getInputForAttr(const media::audio::common::AudioAttr
     RETURN_IF_BINDER_ERROR(
             binderStatusFromStatusT(AudioValidator::validateAudioAttributes(attr, "68953950")));
 
+    const uid_t callingUid = IPCThreadState::self()->getCallingUid();
+
     audio_source_t inputSource = attr.source;
     if (inputSource == AUDIO_SOURCE_DEFAULT) {
         inputSource = AUDIO_SOURCE_MIC;
