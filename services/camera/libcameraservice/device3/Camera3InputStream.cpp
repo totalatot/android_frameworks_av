@@ -104,14 +104,15 @@ status_t Camera3InputStream::getInputBufferLocked(
 
 status_t Camera3InputStream::returnBufferCheckedLocked(
             const camera_stream_buffer &buffer,
-            [[maybe_unused]] nsecs_t timestamp,
-            [[maybe_unused]] nsecs_t readoutTimestamp,
-            [[maybe_unused]] bool output,
+            nsecs_t timestamp,
+            bool output,
             int32_t /*transform*/,
             const std::vector<size_t>&,
             /*out*/
             sp<Fence> *releaseFenceOut) {
 
+    (void)timestamp;
+    (void)output;
     ALOG_ASSERT(!output, "Expected output to be false");
 
     status_t res;
@@ -175,8 +176,7 @@ status_t Camera3InputStream::returnInputBufferLocked(
         const camera_stream_buffer &buffer) {
     ATRACE_CALL();
 
-    return returnAnyBufferLocked(buffer, /*timestamp*/0, /*readoutTimestamp*/0,
-                                 /*output*/false, /*transform*/ -1);
+    return returnAnyBufferLocked(buffer, /*timestamp*/0, /*output*/false, /*transform*/ -1);
 }
 
 status_t Camera3InputStream::getInputBufferProducerLocked(
@@ -215,7 +215,8 @@ status_t Camera3InputStream::disconnectLocked() {
     return OK;
 }
 
-void Camera3InputStream::dump(int fd, [[maybe_unused]] const Vector<String16> &args) const {
+void Camera3InputStream::dump(int fd, const Vector<String16> &args) const {
+    (void) args;
     String8 lines;
     lines.appendFormat("    Stream[%d]: Input\n", mId);
     write(fd, lines.string(), lines.size());

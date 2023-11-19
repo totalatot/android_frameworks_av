@@ -23,8 +23,7 @@
 #include <pthread.h>
 #include <sys/syscall.h>
 
-#include <aidl/android/hardware/camera/device/CameraBlob.h>
-#include <aidl/android/hardware/camera/device/CameraBlobId.h>
+#include <android/hardware/camera/device/3.5/types.h>
 #include <libyuv.h>
 #include <gui/Surface.h>
 #include <utils/Log.h>
@@ -42,8 +41,8 @@
 #include "HeicEncoderInfoManager.h"
 #include "HeicCompositeStream.h"
 
-using aidl::android::hardware::camera::device::CameraBlob;
-using aidl::android::hardware::camera::device::CameraBlobId;
+using android::hardware::camera::device::V3_5::CameraBlob;
+using android::hardware::camera::device::V3_5::CameraBlobId;
 
 namespace android {
 namespace camera3 {
@@ -120,8 +119,8 @@ status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface
         camera_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
         const std::unordered_set<int32_t> &sensorPixelModesUsed,
         std::vector<int> *surfaceIds,
-        int /*streamSetId*/, bool /*isShared*/, int32_t colorSpace,
-        int64_t /*dynamicProfile*/, int64_t /*streamUseCase*/, bool useReadoutTimestamp) {
+        int /*streamSetId*/, bool /*isShared*/) {
+
     sp<CameraDeviceBase> device = mDevice.promote();
     if (!device.get()) {
         ALOGE("%s: Invalid camera device!", __FUNCTION__);
@@ -147,14 +146,7 @@ status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface
 
     res = device->createStream(mAppSegmentSurface, mAppSegmentMaxSize, 1, format,
             kAppSegmentDataSpace, rotation, &mAppSegmentStreamId, physicalCameraId,
-            sensorPixelModesUsed, surfaceIds, camera3::CAMERA3_STREAM_SET_ID_INVALID,
-            /*isShared*/false, /*isMultiResolution*/false,
-            /*consumerUsage*/0, ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
-            OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
-            OutputConfiguration::MIRROR_MODE_AUTO,
-            colorSpace,
-            useReadoutTimestamp);
+            sensorPixelModesUsed,surfaceIds);
     if (res == OK) {
         mAppSegmentSurfaceId = (*surfaceIds)[0];
     } else {
@@ -190,14 +182,7 @@ status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface
     int srcStreamFmt = mUseGrid ? HAL_PIXEL_FORMAT_YCbCr_420_888 :
             HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
     res = device->createStream(mMainImageSurface, width, height, srcStreamFmt, kHeifDataSpace,
-            rotation, id, physicalCameraId, sensorPixelModesUsed, &sourceSurfaceId,
-            camera3::CAMERA3_STREAM_SET_ID_INVALID, /*isShared*/false, /*isMultiResolution*/false,
-            /*consumerUsage*/0, ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
-            OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
-            OutputConfiguration::MIRROR_MODE_AUTO,
-            colorSpace,
-            useReadoutTimestamp);
+            rotation, id, physicalCameraId, sensorPixelModesUsed, &sourceSurfaceId);
     if (res == OK) {
         mMainImageSurfaceId = sourceSurfaceId[0];
         mMainImageStreamId = *id;
@@ -456,10 +441,6 @@ void HeicCompositeStream::onHeicFormatChanged(sp<AMessage>& newFormat) {
             newFormat->setInt32(KEY_TILE_HEIGHT, mGridHeight);
             newFormat->setInt32(KEY_GRID_ROWS, mGridRows);
             newFormat->setInt32(KEY_GRID_COLUMNS, mGridCols);
-            int32_t left, top, right, bottom;
-            if (newFormat->findRect("crop", &left, &top, &right, &bottom)) {
-                newFormat->setRect("crop", 0, 0, mOutputWidth - 1, mOutputHeight - 1);
-            }
         }
     }
     newFormat->setInt32(KEY_IS_DEFAULT, 1 /*isPrimary*/);
@@ -945,7 +926,7 @@ status_t HeicCompositeStream::startMuxerForInputFrame(int64_t frameNumber, Input
                 tempOutputFile.str().c_str(), errno);
         return NO_INIT;
     }
-    inputFrame.muxer = MediaMuxer::create(inputFrame.fileFd, MediaMuxer::OUTPUT_FORMAT_HEIF);
+    inputFrame.muxer = new MediaMuxer(inputFrame.fileFd, MediaMuxer::OUTPUT_FORMAT_HEIF);
     if (inputFrame.muxer == nullptr) {
         ALOGE("%s: Failed to create MediaMuxer for file fd %d",
                 __FUNCTION__, inputFrame.fileFd);
@@ -1149,8 +1130,7 @@ status_t HeicCompositeStream::processCompletedInputFrame(int64_t frameNumber,
     // Copy the content of the file to memory.
     sp<GraphicBuffer> gb = GraphicBuffer::from(inputFrame.anb);
     void* dstBuffer;
-    GraphicBufferLocker gbLocker(gb);
-    auto res = gbLocker.lockAsync(&dstBuffer, inputFrame.fenceFd);
+    auto res = gb->lockAsync(GRALLOC_USAGE_SW_WRITE_OFTEN, &dstBuffer, inputFrame.fenceFd);
     if (res != OK) {
         ALOGE("%s: Error trying to lock output buffer fence: %s (%d)", __FUNCTION__,
                 strerror(-res), res);
@@ -1175,13 +1155,11 @@ status_t HeicCompositeStream::processCompletedInputFrame(int64_t frameNumber,
     inputFrame.fileFd = -1;
 
     // Fill in HEIC header
-    // Must be in sync with CAMERA3_HEIC_BLOB_ID in android_media_Utils.cpp
     uint8_t *header = static_cast<uint8_t*>(dstBuffer) + mMaxHeicBufferSize - sizeof(CameraBlob);
-    CameraBlob blobHeader = {
-        .blobId = static_cast<CameraBlobId>(0x00FE),
-        .blobSizeBytes = static_cast<int32_t>(fSize)
-    };
-    memcpy(header, &blobHeader, sizeof(CameraBlob));
+    struct CameraBlob *blobHeader = (struct CameraBlob *)header;
+    // Must be in sync with CAMERA3_HEIC_BLOB_ID in android_media_Utils.cpp
+    blobHeader->blobId = static_cast<CameraBlobId>(0x00FE);
+    blobHeader->blobSize = fSize;
 
     res = native_window_set_buffers_timestamp(mOutputSurface.get(), inputFrame.timestamp);
     if (res != OK) {
@@ -1443,15 +1421,15 @@ size_t HeicCompositeStream::findAppSegmentsSize(const uint8_t* appSegmentBuffer,
 
     size_t expectedSize = 0;
     // First check for EXIF transport header at the end of the buffer
-    const uint8_t *header = appSegmentBuffer + (maxSize - sizeof(CameraBlob));
-    const CameraBlob *blob = (const CameraBlob*)(header);
+    const uint8_t *header = appSegmentBuffer + (maxSize - sizeof(struct CameraBlob));
+    const struct CameraBlob *blob = (const struct CameraBlob*)(header);
     if (blob->blobId != CameraBlobId::JPEG_APP_SEGMENTS) {
-        ALOGE("%s: Invalid EXIF blobId %d", __FUNCTION__, blob->blobId);
+        ALOGE("%s: Invalid EXIF blobId %hu", __FUNCTION__, blob->blobId);
         return 0;
     }
 
-    expectedSize = blob->blobSizeBytes;
-    if (expectedSize == 0 || expectedSize > maxSize - sizeof(CameraBlob)) {
+    expectedSize = blob->blobSize;
+    if (expectedSize == 0 || expectedSize > maxSize - sizeof(struct CameraBlob)) {
         ALOGE("%s: Invalid blobSize %zu.", __FUNCTION__, expectedSize);
         return 0;
     }
@@ -1615,7 +1593,7 @@ status_t HeicCompositeStream::copyOneYuvTile(sp<MediaCodecBuffer>& codecBuffer,
     return OK;
 }
 
-void HeicCompositeStream::initCopyRowFunction([[maybe_unused]] int32_t width)
+void HeicCompositeStream::initCopyRowFunction(int32_t width)
 {
     using namespace libyuv;
 
@@ -1654,7 +1632,7 @@ size_t HeicCompositeStream::calcAppSegmentMaxSize(const CameraMetadata& info) {
         maxAppsSegment = entry.data.u8[0] < 1 ? 1 :
                 entry.data.u8[0] > 16 ? 16 : entry.data.u8[0];
     }
-    return maxAppsSegment * (2 + 0xFFFF) + sizeof(CameraBlob);
+    return maxAppsSegment * (2 + 0xFFFF) + sizeof(struct CameraBlob);
 }
 
 void HeicCompositeStream::updateCodecQualityLocked(int32_t quality) {

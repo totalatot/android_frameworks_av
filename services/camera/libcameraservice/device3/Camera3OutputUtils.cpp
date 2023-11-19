@@ -128,71 +128,12 @@ status_t fixupMonochromeTags(
     return res;
 }
 
-status_t fixupAutoframingTags(CameraMetadata& resultMetadata) {
-    status_t res = OK;
-    camera_metadata_entry autoframingEntry =
-            resultMetadata.find(ANDROID_CONTROL_AUTOFRAMING);
-    if (autoframingEntry.count == 0) {
-        const uint8_t defaultAutoframingEntry = ANDROID_CONTROL_AUTOFRAMING_OFF;
-        res = resultMetadata.update(ANDROID_CONTROL_AUTOFRAMING, &defaultAutoframingEntry, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_CONTROL_AUTOFRAMING: %s (%d)",
-                  __FUNCTION__, strerror(-res), res);
-            return res;
-        }
-    }
-
-    camera_metadata_entry autoframingStateEntry =
-            resultMetadata.find(ANDROID_CONTROL_AUTOFRAMING_STATE);
-    if (autoframingStateEntry.count == 0) {
-        const uint8_t defaultAutoframingStateEntry = ANDROID_CONTROL_AUTOFRAMING_STATE_INACTIVE;
-        res = resultMetadata.update(ANDROID_CONTROL_AUTOFRAMING_STATE,
-                                    &defaultAutoframingStateEntry, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_CONTROL_AUTOFRAMING_STATE: %s (%d)",
-                  __FUNCTION__, strerror(-res), res);
-            return res;
-        }
-    }
-
-    return res;
-}
-
-void correctMeteringRegions(camera_metadata_t *meta) {
-    if (meta == nullptr) return;
-
-    uint32_t meteringRegionKeys[] = {
-            ANDROID_CONTROL_AE_REGIONS,
-            ANDROID_CONTROL_AWB_REGIONS,
-            ANDROID_CONTROL_AF_REGIONS };
-
-    for (uint32_t key : meteringRegionKeys) {
-        camera_metadata_entry_t entry;
-        int res = find_camera_metadata_entry(meta, key, &entry);
-        if (res != OK) continue;
-
-        for (size_t i = 0; i < entry.count; i += 5) {
-            if (entry.data.i32[0] > entry.data.i32[2]) {
-                ALOGW("%s: Invalid metering region (%d): left: %d, right: %d",
-                        __FUNCTION__, key, entry.data.i32[0], entry.data.i32[2]);
-                entry.data.i32[2] = entry.data.i32[0];
-            }
-            if (entry.data.i32[1] > entry.data.i32[3]) {
-                ALOGW("%s: Invalid metering region (%d): top: %d, bottom: %d",
-                        __FUNCTION__, key, entry.data.i32[1], entry.data.i32[3]);
-                entry.data.i32[3] = entry.data.i32[1];
-            }
-        }
-    }
-}
-
 void insertResultLocked(CaptureOutputStates& states, CaptureResult *result, uint32_t frameNumber) {
     if (result == nullptr) return;
 
     camera_metadata_t *meta = const_cast<camera_metadata_t *>(
             result->mMetadata.getAndLock());
     set_camera_metadata_vendor_id(meta, states.vendorTagId);
-    correctMeteringRegions(meta);
     result->mMetadata.unlock(meta);
 
     if (result->mMetadata.update(ANDROID_REQUEST_FRAME_COUNT,
@@ -211,7 +152,6 @@ void insertResultLocked(CaptureOutputStates& states, CaptureResult *result, uint
         camera_metadata_t *pmeta = const_cast<camera_metadata_t *>(
                 physicalMetadata.mPhysicalCameraMetadata.getAndLock());
         set_camera_metadata_vendor_id(pmeta, states.vendorTagId);
-        correctMeteringRegions(pmeta);
         physicalMetadata.mPhysicalCameraMetadata.unlock(pmeta);
     }
 
@@ -384,22 +324,6 @@ void sendCaptureResult(
         }
     }
 
-    // Fix up autoframing metadata
-    res = fixupAutoframingTags(captureResult.mMetadata);
-    if (res != OK) {
-        SET_ERR("Failed to set autoframing defaults in result metadata: %s (%d)",
-                strerror(-res), res);
-        return;
-    }
-    for (auto& physicalMetadata : captureResult.mPhysicalMetadatas) {
-        res = fixupAutoframingTags(physicalMetadata.mPhysicalCameraMetadata);
-        if (res != OK) {
-            SET_ERR("Failed to set autoframing defaults in physical result metadata: %s (%d)",
-                    strerror(-res), res);
-            return;
-        }
-    }
-
     for (auto& physicalMetadata : captureResult.mPhysicalMetadatas) {
         String8 cameraId8(physicalMetadata.mPhysicalCameraId);
         auto mapper = states.distortionMappers.find(cameraId8.c_str());
@@ -452,6 +376,43 @@ void sendCaptureResult(
     insertResultLocked(states, &captureResult, frameNumber);
 }
 
+// Reading one camera metadata from result argument via fmq or from the result
+// Assuming the fmq is protected by a lock already
+status_t readOneCameraMetadataLocked(
+        std::unique_ptr<ResultMetadataQueue>& fmq,
+        uint64_t fmqResultSize,
+        hardware::camera::device::V3_2::CameraMetadata& resultMetadata,
+        const hardware::camera::device::V3_2::CameraMetadata& result) {
+    if (fmqResultSize > 0) {
+        resultMetadata.resize(fmqResultSize);
+        if (fmq == nullptr) {
+            return NO_MEMORY; // logged in initialize()
+        }
+        if (!fmq->read(resultMetadata.data(), fmqResultSize)) {
+            ALOGE("%s: Cannot read camera metadata from fmq, size = %" PRIu64,
+                    __FUNCTION__, fmqResultSize);
+            return INVALID_OPERATION;
+        }
+    } else {
+        resultMetadata.setToExternal(const_cast<uint8_t *>(result.data()),
+                result.size());
+    }
+
+    if (resultMetadata.size() != 0) {
+        status_t res;
+        const camera_metadata_t* metadata =
+                reinterpret_cast<const camera_metadata_t*>(resultMetadata.data());
+        size_t expected_metadata_size = resultMetadata.size();
+        if ((res = validate_camera_metadata_structure(metadata, &expected_metadata_size)) != OK) {
+            ALOGE("%s: Invalid camera metadata received by camera service from HAL: %s (%d)",
+                    __FUNCTION__, strerror(-res), res);
+            return INVALID_OPERATION;
+        }
+    }
+
+    return OK;
+}
+
 void removeInFlightMapEntryLocked(CaptureOutputStates& states, int idx) {
     ATRACE_CALL();
     InFlightRequestMap& inflightMap = states.inflightMap;
@@ -502,7 +463,7 @@ void removeInFlightRequestIfReadyLocked(CaptureOutputStates& states, int idx) {
         returnOutputBuffers(
             states.useHalBufManager, states.listener,
             request.pendingOutputBuffers.array(),
-            request.pendingOutputBuffers.size(), /*timestamp*/0, /*readoutTimestamp*/0,
+            request.pendingOutputBuffers.size(), 0,
             /*requested*/true, request.requestTimeNs, states.sessionStatsBuilder,
             /*timestampIncreasing*/true,
             request.outputSurfaces, request.resultExtras,
@@ -511,7 +472,7 @@ void removeInFlightRequestIfReadyLocked(CaptureOutputStates& states, int idx) {
         // Note down the just completed frame number
         if (request.hasInputBuffer) {
             states.lastCompletedReprocessFrameNumber = frameNumber;
-        } else if (request.zslCapture && request.stillCapture) {
+        } else if (request.zslCapture) {
             states.lastCompletedZslFrameNumber = frameNumber;
         } else {
             states.lastCompletedRegularFrameNumber = frameNumber;
@@ -538,32 +499,6 @@ bool erasePhysicalCameraIdSet(
         }
     }
     return found;
-}
-
-const std::set<std::string>& getCameraIdsWithZoomLocked(
-        const InFlightRequestMap& inflightMap, const CameraMetadata& metadata,
-        const std::set<std::string>& cameraIdsWithZoom) {
-    camera_metadata_ro_entry overrideEntry =
-            metadata.find(ANDROID_CONTROL_SETTINGS_OVERRIDE);
-    camera_metadata_ro_entry frameNumberEntry =
-            metadata.find(ANDROID_CONTROL_SETTINGS_OVERRIDING_FRAME_NUMBER);
-    if (overrideEntry.count != 1
-            || overrideEntry.data.i32[0] != ANDROID_CONTROL_SETTINGS_OVERRIDE_ZOOM
-            || frameNumberEntry.count != 1) {
-        // No valid overriding frame number, skip
-        return cameraIdsWithZoom;
-    }
-
-    uint32_t overridingFrameNumber = frameNumberEntry.data.i32[0];
-    ssize_t idx = inflightMap.indexOfKey(overridingFrameNumber);
-    if (idx < 0) {
-        ALOGE("%s: Failed to find pending request #%d in inflight map",
-                __FUNCTION__, overridingFrameNumber);
-        return cameraIdsWithZoom;
-    }
-
-    const InFlightRequest &r = inflightMap.valueFor(overridingFrameNumber);
-    return r.cameraIdsWithZoom;
 }
 
 void processCaptureResult(CaptureOutputStates& states, const camera_capture_result *result) {
@@ -623,50 +558,27 @@ void processCaptureResult(CaptureOutputStates& states, const camera_capture_resu
         if (result->partial_result != 0)
             request.resultExtras.partialResultCount = result->partial_result;
 
-        if (result->result != nullptr) {
+        if ((result->result != nullptr) && !states.legacyClient) {
             camera_metadata_ro_entry entry;
             auto ret = find_camera_metadata_ro_entry(result->result,
                     ANDROID_LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID, &entry);
             if ((ret == OK) && (entry.count > 0)) {
                 std::string physicalId(reinterpret_cast<const char *>(entry.data.u8));
-                if (!states.activePhysicalId.empty() && physicalId != states.activePhysicalId) {
-                    states.listener->notifyPhysicalCameraChange(physicalId);
-                }
-                states.activePhysicalId = physicalId;
-
-                if (!states.legacyClient && !states.overrideToPortrait) {
-                    auto deviceInfo = states.physicalDeviceInfoMap.find(physicalId);
-                    if (deviceInfo != states.physicalDeviceInfoMap.end()) {
-                        auto orientation = deviceInfo->second.find(ANDROID_SENSOR_ORIENTATION);
-                        if (orientation.count > 0) {
-                            int32_t transform;
-                            ret = CameraUtils::getRotationTransform(deviceInfo->second,
-                                    OutputConfiguration::MIRROR_MODE_AUTO, &transform);
-                            if (ret == OK) {
-                                // It is possible for camera providers to return the capture
-                                // results after the processed frames. In such scenario, we will
-                                // not be able to set the output transformation before the frames
-                                // return back to the consumer for the current capture request
-                                // but we could still try and configure it for any future requests
-                                // that are still in flight. The assumption is that the physical
-                                // device id remains the same for the duration of the pending queue.
-                                for (size_t i = 0; i < states.inflightMap.size(); i++) {
-                                    auto &r = states.inflightMap.editValueAt(i);
-                                    if (r.requestTimeNs >= request.requestTimeNs) {
-                                        r.transform = transform;
-                                    }
-                                }
-                            } else {
-                                ALOGE("%s: Failed to calculate current stream transformation: %s "
-                                        "(%d)", __FUNCTION__, strerror(-ret), ret);
-                            }
-                        } else {
-                            ALOGE("%s: Physical device orientation absent!", __FUNCTION__);
+                auto deviceInfo = states.physicalDeviceInfoMap.find(physicalId);
+                if (deviceInfo != states.physicalDeviceInfoMap.end()) {
+                    auto orientation = deviceInfo->second.find(ANDROID_SENSOR_ORIENTATION);
+                    if (orientation.count > 0) {
+                        ret = CameraUtils::getRotationTransform(deviceInfo->second,
+                                &request.transform);
+                        if (ret != OK) {
+                            ALOGE("%s: Failed to calculate current stream transformation: %s (%d)",
+                                    __FUNCTION__, strerror(-ret), ret);
                         }
                     } else {
-                        ALOGE("%s: Physical device not found in device info map found!",
-                                __FUNCTION__);
+                        ALOGE("%s: Physical device orientation absent!", __FUNCTION__);
                     }
+                } else {
+                    ALOGE("%s: Physical device not found in device info map found!", __FUNCTION__);
                 }
             }
         }
@@ -777,12 +689,10 @@ void processCaptureResult(CaptureOutputStates& states, const camera_capture_resu
             } else if (request.hasCallback) {
                 CameraMetadata metadata;
                 metadata = result->result;
-                auto cameraIdsWithZoom = getCameraIdsWithZoomLocked(
-                        states.inflightMap, metadata, request.cameraIdsWithZoom);
                 sendCaptureResult(states, metadata, request.resultExtras,
                     collectedPartialResult, frameNumber,
                     hasInputBufferInRequest, request.zslCapture && request.stillCapture,
-                    request.rotateAndCropAuto, cameraIdsWithZoom,
+                    request.rotateAndCropAuto, request.cameraIdsWithZoom,
                     request.physicalMetadatas);
             }
         }
@@ -809,13 +719,160 @@ void processCaptureResult(CaptureOutputStates& states, const camera_capture_resu
     }
 }
 
+void processOneCaptureResultLocked(
+        CaptureOutputStates& states,
+        const hardware::camera::device::V3_2::CaptureResult& result,
+        const hardware::hidl_vec<
+                hardware::camera::device::V3_4::PhysicalCameraMetadata> physicalCameraMetadata) {
+    using hardware::camera::device::V3_2::StreamBuffer;
+    using hardware::camera::device::V3_2::BufferStatus;
+    std::unique_ptr<ResultMetadataQueue>& fmq = states.fmq;
+    BufferRecordsInterface& bufferRecords = states.bufferRecordsIntf;
+    camera_capture_result r;
+    status_t res;
+    r.frame_number = result.frameNumber;
+
+    // Read and validate the result metadata.
+    hardware::camera::device::V3_2::CameraMetadata resultMetadata;
+    res = readOneCameraMetadataLocked(
+            fmq, result.fmqResultSize,
+            resultMetadata, result.result);
+    if (res != OK) {
+        ALOGE("%s: Frame %d: Failed to read capture result metadata",
+                __FUNCTION__, result.frameNumber);
+        return;
+    }
+    r.result = reinterpret_cast<const camera_metadata_t*>(resultMetadata.data());
+
+    // Read and validate physical camera metadata
+    size_t physResultCount = physicalCameraMetadata.size();
+    std::vector<const char*> physCamIds(physResultCount);
+    std::vector<const camera_metadata_t *> phyCamMetadatas(physResultCount);
+    std::vector<hardware::camera::device::V3_2::CameraMetadata> physResultMetadata;
+    physResultMetadata.resize(physResultCount);
+    for (size_t i = 0; i < physicalCameraMetadata.size(); i++) {
+        res = readOneCameraMetadataLocked(fmq, physicalCameraMetadata[i].fmqMetadataSize,
+                physResultMetadata[i], physicalCameraMetadata[i].metadata);
+        if (res != OK) {
+            ALOGE("%s: Frame %d: Failed to read capture result metadata for camera %s",
+                    __FUNCTION__, result.frameNumber,
+                    physicalCameraMetadata[i].physicalCameraId.c_str());
+            return;
+        }
+        physCamIds[i] = physicalCameraMetadata[i].physicalCameraId.c_str();
+        phyCamMetadatas[i] = reinterpret_cast<const camera_metadata_t*>(
+                physResultMetadata[i].data());
+    }
+    r.num_physcam_metadata = physResultCount;
+    r.physcam_ids = physCamIds.data();
+    r.physcam_metadata = phyCamMetadatas.data();
+
+    std::vector<camera_stream_buffer_t> outputBuffers(result.outputBuffers.size());
+    std::vector<buffer_handle_t> outputBufferHandles(result.outputBuffers.size());
+    for (size_t i = 0; i < result.outputBuffers.size(); i++) {
+        auto& bDst = outputBuffers[i];
+        const StreamBuffer &bSrc = result.outputBuffers[i];
+
+        sp<Camera3StreamInterface> stream = states.outputStreams.get(bSrc.streamId);
+        if (stream == nullptr) {
+            ALOGE("%s: Frame %d: Buffer %zu: Invalid output stream id %d",
+                    __FUNCTION__, result.frameNumber, i, bSrc.streamId);
+            return;
+        }
+        bDst.stream = stream->asHalStream();
+
+        bool noBufferReturned = false;
+        buffer_handle_t *buffer = nullptr;
+        if (states.useHalBufManager) {
+            // This is suspicious most of the time but can be correct during flush where HAL
+            // has to return capture result before a buffer is requested
+            if (bSrc.bufferId == BUFFER_ID_NO_BUFFER) {
+                if (bSrc.status == BufferStatus::OK) {
+                    ALOGE("%s: Frame %d: Buffer %zu: No bufferId for stream %d",
+                            __FUNCTION__, result.frameNumber, i, bSrc.streamId);
+                    // Still proceeds so other buffers can be returned
+                }
+                noBufferReturned = true;
+            }
+            if (noBufferReturned) {
+                res = OK;
+            } else {
+                res = bufferRecords.popInflightRequestBuffer(bSrc.bufferId, &buffer);
+            }
+        } else {
+            res = bufferRecords.popInflightBuffer(result.frameNumber, bSrc.streamId, &buffer);
+        }
+
+        if (res != OK) {
+            ALOGE("%s: Frame %d: Buffer %zu: No in-flight buffer for stream %d",
+                    __FUNCTION__, result.frameNumber, i, bSrc.streamId);
+            return;
+        }
+
+        bDst.buffer = buffer;
+        bDst.status = mapHidlBufferStatus(bSrc.status);
+        bDst.acquire_fence = -1;
+        if (bSrc.releaseFence == nullptr) {
+            bDst.release_fence = -1;
+        } else if (bSrc.releaseFence->numFds == 1) {
+            if (noBufferReturned) {
+                ALOGE("%s: got releaseFence without output buffer!", __FUNCTION__);
+            }
+            bDst.release_fence = dup(bSrc.releaseFence->data[0]);
+        } else {
+            ALOGE("%s: Frame %d: Invalid release fence for buffer %zu, fd count is %d, not 1",
+                    __FUNCTION__, result.frameNumber, i, bSrc.releaseFence->numFds);
+            return;
+        }
+    }
+    r.num_output_buffers = outputBuffers.size();
+    r.output_buffers = outputBuffers.data();
+
+    camera_stream_buffer_t inputBuffer;
+    if (result.inputBuffer.streamId == -1) {
+        r.input_buffer = nullptr;
+    } else {
+        if (states.inputStream->getId() != result.inputBuffer.streamId) {
+            ALOGE("%s: Frame %d: Invalid input stream id %d", __FUNCTION__,
+                    result.frameNumber, result.inputBuffer.streamId);
+            return;
+        }
+        inputBuffer.stream = states.inputStream->asHalStream();
+        buffer_handle_t *buffer;
+        res = bufferRecords.popInflightBuffer(result.frameNumber, result.inputBuffer.streamId,
+                &buffer);
+        if (res != OK) {
+            ALOGE("%s: Frame %d: Input buffer: No in-flight buffer for stream %d",
+                    __FUNCTION__, result.frameNumber, result.inputBuffer.streamId);
+            return;
+        }
+        inputBuffer.buffer = buffer;
+        inputBuffer.status = mapHidlBufferStatus(result.inputBuffer.status);
+        inputBuffer.acquire_fence = -1;
+        if (result.inputBuffer.releaseFence == nullptr) {
+            inputBuffer.release_fence = -1;
+        } else if (result.inputBuffer.releaseFence->numFds == 1) {
+            inputBuffer.release_fence = dup(result.inputBuffer.releaseFence->data[0]);
+        } else {
+            ALOGE("%s: Frame %d: Invalid release fence for input buffer, fd count is %d, not 1",
+                    __FUNCTION__, result.frameNumber, result.inputBuffer.releaseFence->numFds);
+            return;
+        }
+        r.input_buffer = &inputBuffer;
+    }
+
+    r.partial_result = result.partialResult;
+
+    processCaptureResult(states, &r);
+}
+
 void returnOutputBuffers(
         bool useHalBufManager,
         sp<NotificationListener> listener,
         const camera_stream_buffer_t *outputBuffers, size_t numBuffers,
-        nsecs_t timestamp, nsecs_t readoutTimestamp, bool requested,
-        nsecs_t requestTimeNs, SessionStatsBuilder& sessionStatsBuilder,
-        bool timestampIncreasing, const SurfaceMap& outputSurfaces,
+        nsecs_t timestamp, bool requested, nsecs_t requestTimeNs,
+        SessionStatsBuilder& sessionStatsBuilder, bool timestampIncreasing,
+        const SurfaceMap& outputSurfaces,
         const CaptureResultExtras &inResultExtras,
         ERROR_BUF_STRATEGY errorBufStrategy, int32_t transform) {
 
@@ -859,11 +916,11 @@ void returnOutputBuffers(
                 errorBufStrategy != ERROR_BUF_CACHE) {
             if (it != outputSurfaces.end()) {
                 res = stream->returnBuffer(
-                        outputBuffers[i], timestamp, readoutTimestamp, timestampIncreasing,
-                        it->second, inResultExtras.frameNumber, transform);
+                        outputBuffers[i], timestamp, timestampIncreasing, it->second,
+                        inResultExtras.frameNumber, transform);
             } else {
                 res = stream->returnBuffer(
-                        outputBuffers[i], timestamp, readoutTimestamp, timestampIncreasing,
+                        outputBuffers[i], timestamp, timestampIncreasing,
                         std::vector<size_t> (), inResultExtras.frameNumber, transform);
             }
         }
@@ -894,7 +951,7 @@ void returnOutputBuffers(
             // cancel the buffer
             camera_stream_buffer_t sb = outputBuffers[i];
             sb.status = CAMERA_BUFFER_STATUS_ERROR;
-            stream->returnBuffer(sb, /*timestamp*/0, /*readoutTimestamp*/0,
+            stream->returnBuffer(sb, /*timestamp*/0,
                     timestampIncreasing, std::vector<size_t> (),
                     inResultExtras.frameNumber, transform);
 
@@ -912,15 +969,12 @@ void returnOutputBuffers(
 void returnAndRemovePendingOutputBuffers(bool useHalBufManager,
         sp<NotificationListener> listener, InFlightRequest& request,
         SessionStatsBuilder& sessionStatsBuilder) {
-    bool timestampIncreasing =
-            !((request.zslCapture && request.stillCapture) || request.hasInputBuffer);
-    nsecs_t readoutTimestamp = request.resultExtras.hasReadoutTimestamp ?
-            request.resultExtras.readoutTimestamp : 0;
+    bool timestampIncreasing = !(request.zslCapture || request.hasInputBuffer);
     returnOutputBuffers(useHalBufManager, listener,
             request.pendingOutputBuffers.array(),
             request.pendingOutputBuffers.size(),
-            request.shutterTimestamp, readoutTimestamp,
-            /*requested*/true, request.requestTimeNs, sessionStatsBuilder, timestampIncreasing,
+            request.shutterTimestamp, /*requested*/true,
+            request.requestTimeNs, sessionStatsBuilder, timestampIncreasing,
             request.outputSurfaces, request.resultExtras,
             request.errorBufStrategy, request.transform);
 
@@ -981,19 +1035,6 @@ void notifyShutter(CaptureOutputStates& states, const camera_shutter_msg_t &msg)
             }
 
             r.shutterTimestamp = msg.timestamp;
-            if (msg.readout_timestamp_valid) {
-                r.resultExtras.hasReadoutTimestamp = true;
-                r.resultExtras.readoutTimestamp = msg.readout_timestamp;
-            }
-            if (r.minExpectedDuration != states.minFrameDuration ||
-                    r.isFixedFps != states.isFixedFps) {
-                for (size_t i = 0; i < states.outputStreams.size(); i++) {
-                    auto outputStream = states.outputStreams[i];
-                    outputStream->onMinDurationChanged(r.minExpectedDuration, r.isFixedFps);
-                }
-                states.minFrameDuration = r.minExpectedDuration;
-                states.isFixedFps = r.isFixedFps;
-            }
             if (r.hasCallback) {
                 ALOGVV("Camera %s: %s: Shutter fired for frame %d (id %d) at %" PRId64,
                     states.cameraId.string(), __FUNCTION__,
@@ -1009,13 +1050,11 @@ void notifyShutter(CaptureOutputStates& states, const camera_shutter_msg_t &msg)
                     states.listener->notifyShutter(r.resultExtras, msg.timestamp);
                 }
                 // send pending result and buffers
-                const auto& cameraIdsWithZoom = getCameraIdsWithZoomLocked(
-                        inflightMap, r.pendingMetadata, r.cameraIdsWithZoom);
                 sendCaptureResult(states,
                     r.pendingMetadata, r.resultExtras,
                     r.collectedPartialResult, msg.frame_number,
                     r.hasInputBuffer, r.zslCapture && r.stillCapture,
-                    r.rotateAndCropAuto, cameraIdsWithZoom, r.physicalMetadatas);
+                    r.rotateAndCropAuto, r.cameraIdsWithZoom, r.physicalMetadatas);
             }
             returnAndRemovePendingOutputBuffers(
                     states.useHalBufManager, states.listener, r, states.sessionStatsBuilder);
@@ -1153,6 +1192,296 @@ void notify(CaptureOutputStates& states, const camera_notify_msg *msg) {
     }
 }
 
+void notify(CaptureOutputStates& states,
+        const hardware::camera::device::V3_2::NotifyMsg& msg) {
+    using android::hardware::camera::device::V3_2::MsgType;
+    using android::hardware::camera::device::V3_2::ErrorCode;
+
+    ATRACE_CALL();
+    camera_notify_msg m;
+    switch (msg.type) {
+        case MsgType::ERROR:
+            m.type = CAMERA_MSG_ERROR;
+            m.message.error.frame_number = msg.msg.error.frameNumber;
+            if (msg.msg.error.errorStreamId >= 0) {
+                sp<Camera3StreamInterface> stream =
+                        states.outputStreams.get(msg.msg.error.errorStreamId);
+                if (stream == nullptr) {
+                    ALOGE("%s: Frame %d: Invalid error stream id %d", __FUNCTION__,
+                            m.message.error.frame_number, msg.msg.error.errorStreamId);
+                    return;
+                }
+                m.message.error.error_stream = stream->asHalStream();
+            } else {
+                m.message.error.error_stream = nullptr;
+            }
+            switch (msg.msg.error.errorCode) {
+                case ErrorCode::ERROR_DEVICE:
+                    m.message.error.error_code = CAMERA_MSG_ERROR_DEVICE;
+                    break;
+                case ErrorCode::ERROR_REQUEST:
+                    m.message.error.error_code = CAMERA_MSG_ERROR_REQUEST;
+                    break;
+                case ErrorCode::ERROR_RESULT:
+                    m.message.error.error_code = CAMERA_MSG_ERROR_RESULT;
+                    break;
+                case ErrorCode::ERROR_BUFFER:
+                    m.message.error.error_code = CAMERA_MSG_ERROR_BUFFER;
+                    break;
+            }
+            break;
+        case MsgType::SHUTTER:
+            m.type = CAMERA_MSG_SHUTTER;
+            m.message.shutter.frame_number = msg.msg.shutter.frameNumber;
+            m.message.shutter.timestamp = msg.msg.shutter.timestamp;
+            break;
+    }
+    notify(states, &m);
+}
+
+void requestStreamBuffers(RequestBufferStates& states,
+        const hardware::hidl_vec<hardware::camera::device::V3_5::BufferRequest>& bufReqs,
+        hardware::camera::device::V3_5::ICameraDeviceCallback::requestStreamBuffers_cb _hidl_cb) {
+    using android::hardware::camera::device::V3_2::BufferStatus;
+    using android::hardware::camera::device::V3_2::StreamBuffer;
+    using android::hardware::camera::device::V3_5::BufferRequestStatus;
+    using android::hardware::camera::device::V3_5::StreamBufferRet;
+    using android::hardware::camera::device::V3_5::StreamBufferRequestError;
+
+    std::lock_guard<std::mutex> lock(states.reqBufferLock);
+
+    hardware::hidl_vec<StreamBufferRet> bufRets;
+    if (!states.useHalBufManager) {
+        ALOGE("%s: Camera %s does not support HAL buffer management",
+                __FUNCTION__, states.cameraId.string());
+        _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, bufRets);
+        return;
+    }
+
+    SortedVector<int32_t> streamIds;
+    ssize_t sz = streamIds.setCapacity(bufReqs.size());
+    if (sz < 0 || static_cast<size_t>(sz) != bufReqs.size()) {
+        ALOGE("%s: failed to allocate memory for %zu buffer requests",
+                __FUNCTION__, bufReqs.size());
+        _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, bufRets);
+        return;
+    }
+
+    if (bufReqs.size() > states.outputStreams.size()) {
+        ALOGE("%s: too many buffer requests (%zu > # of output streams %zu)",
+                __FUNCTION__, bufReqs.size(), states.outputStreams.size());
+        _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, bufRets);
+        return;
+    }
+
+    // Check for repeated streamId
+    for (const auto& bufReq : bufReqs) {
+        if (streamIds.indexOf(bufReq.streamId) != NAME_NOT_FOUND) {
+            ALOGE("%s: Stream %d appear multiple times in buffer requests",
+                    __FUNCTION__, bufReq.streamId);
+            _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, bufRets);
+            return;
+        }
+        streamIds.add(bufReq.streamId);
+    }
+
+    if (!states.reqBufferIntf.startRequestBuffer()) {
+        ALOGE("%s: request buffer disallowed while camera service is configuring",
+                __FUNCTION__);
+        _hidl_cb(BufferRequestStatus::FAILED_CONFIGURING, bufRets);
+        return;
+    }
+
+    bufRets.resize(bufReqs.size());
+
+    bool allReqsSucceeds = true;
+    bool oneReqSucceeds = false;
+    for (size_t i = 0; i < bufReqs.size(); i++) {
+        const auto& bufReq = bufReqs[i];
+        auto& bufRet = bufRets[i];
+        int32_t streamId = bufReq.streamId;
+        sp<Camera3OutputStreamInterface> outputStream = states.outputStreams.get(streamId);
+        if (outputStream == nullptr) {
+            ALOGE("%s: Output stream id %d not found!", __FUNCTION__, streamId);
+            hardware::hidl_vec<StreamBufferRet> emptyBufRets;
+            _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, emptyBufRets);
+            states.reqBufferIntf.endRequestBuffer();
+            return;
+        }
+
+        bufRet.streamId = streamId;
+        if (outputStream->isAbandoned()) {
+            bufRet.val.error(StreamBufferRequestError::STREAM_DISCONNECTED);
+            allReqsSucceeds = false;
+            continue;
+        }
+
+        size_t handOutBufferCount = outputStream->getOutstandingBuffersCount();
+        uint32_t numBuffersRequested = bufReq.numBuffersRequested;
+        size_t totalHandout = handOutBufferCount + numBuffersRequested;
+        uint32_t maxBuffers = outputStream->asHalStream()->max_buffers;
+        if (totalHandout > maxBuffers) {
+            // Not able to allocate enough buffer. Exit early for this stream
+            ALOGE("%s: request too much buffers for stream %d: at HAL: %zu + requesting: %d"
+                    " > max: %d", __FUNCTION__, streamId, handOutBufferCount,
+                    numBuffersRequested, maxBuffers);
+            bufRet.val.error(StreamBufferRequestError::MAX_BUFFER_EXCEEDED);
+            allReqsSucceeds = false;
+            continue;
+        }
+
+        hardware::hidl_vec<StreamBuffer> tmpRetBuffers(numBuffersRequested);
+        bool currentReqSucceeds = true;
+        std::vector<camera_stream_buffer_t> streamBuffers(numBuffersRequested);
+        std::vector<buffer_handle_t> newBuffers;
+        size_t numAllocatedBuffers = 0;
+        size_t numPushedInflightBuffers = 0;
+        for (size_t b = 0; b < numBuffersRequested; b++) {
+            camera_stream_buffer_t& sb = streamBuffers[b];
+            // Since this method can run concurrently with request thread
+            // We need to update the wait duration everytime we call getbuffer
+            nsecs_t waitDuration =  states.reqBufferIntf.getWaitDuration();
+            status_t res = outputStream->getBuffer(&sb, waitDuration);
+            if (res != OK) {
+                if (res == NO_INIT || res == DEAD_OBJECT) {
+                    ALOGV("%s: Can't get output buffer for stream %d: %s (%d)",
+                            __FUNCTION__, streamId, strerror(-res), res);
+                    bufRet.val.error(StreamBufferRequestError::STREAM_DISCONNECTED);
+                    states.sessionStatsBuilder.stopCounter(streamId);
+                } else {
+                    ALOGE("%s: Can't get output buffer for stream %d: %s (%d)",
+                            __FUNCTION__, streamId, strerror(-res), res);
+                    if (res == TIMED_OUT || res == NO_MEMORY) {
+                        bufRet.val.error(StreamBufferRequestError::NO_BUFFER_AVAILABLE);
+                    } else {
+                        bufRet.val.error(StreamBufferRequestError::UNKNOWN_ERROR);
+                    }
+                }
+                currentReqSucceeds = false;
+                break;
+            }
+            numAllocatedBuffers++;
+
+            buffer_handle_t *buffer = sb.buffer;
+            auto pair = states.bufferRecordsIntf.getBufferId(*buffer, streamId);
+            bool isNewBuffer = pair.first;
+            uint64_t bufferId = pair.second;
+            StreamBuffer& hBuf = tmpRetBuffers[b];
+
+            hBuf.streamId = streamId;
+            hBuf.bufferId = bufferId;
+            hBuf.buffer = (isNewBuffer) ? *buffer : nullptr;
+            hBuf.status = BufferStatus::OK;
+            hBuf.releaseFence = nullptr;
+            if (isNewBuffer) {
+                newBuffers.push_back(*buffer);
+            }
+
+            native_handle_t *acquireFence = nullptr;
+            if (sb.acquire_fence != -1) {
+                acquireFence = native_handle_create(1,0);
+                acquireFence->data[0] = sb.acquire_fence;
+            }
+            hBuf.acquireFence.setTo(acquireFence, /*shouldOwn*/true);
+            hBuf.releaseFence = nullptr;
+
+            res = states.bufferRecordsIntf.pushInflightRequestBuffer(bufferId, buffer, streamId);
+            if (res != OK) {
+                ALOGE("%s: Can't get register request buffers for stream %d: %s (%d)",
+                        __FUNCTION__, streamId, strerror(-res), res);
+                bufRet.val.error(StreamBufferRequestError::UNKNOWN_ERROR);
+                currentReqSucceeds = false;
+                break;
+            }
+            numPushedInflightBuffers++;
+        }
+        if (currentReqSucceeds) {
+            bufRet.val.buffers(std::move(tmpRetBuffers));
+            oneReqSucceeds = true;
+        } else {
+            allReqsSucceeds = false;
+            for (size_t b = 0; b < numPushedInflightBuffers; b++) {
+                StreamBuffer& hBuf = tmpRetBuffers[b];
+                buffer_handle_t* buffer;
+                status_t res = states.bufferRecordsIntf.popInflightRequestBuffer(
+                        hBuf.bufferId, &buffer);
+                if (res != OK) {
+                    SET_ERR("%s: popInflightRequestBuffer failed for stream %d: %s (%d)",
+                            __FUNCTION__, streamId, strerror(-res), res);
+                }
+            }
+            for (size_t b = 0; b < numAllocatedBuffers; b++) {
+                camera_stream_buffer_t& sb = streamBuffers[b];
+                sb.acquire_fence = -1;
+                sb.status = CAMERA_BUFFER_STATUS_ERROR;
+            }
+            returnOutputBuffers(states.useHalBufManager, /*listener*/nullptr,
+                    streamBuffers.data(), numAllocatedBuffers, 0, /*requested*/false,
+                    /*requestTimeNs*/0, states.sessionStatsBuilder);
+            for (auto buf : newBuffers) {
+                states.bufferRecordsIntf.removeOneBufferCache(streamId, buf);
+            }
+        }
+    }
+
+    _hidl_cb(allReqsSucceeds ? BufferRequestStatus::OK :
+            oneReqSucceeds ? BufferRequestStatus::FAILED_PARTIAL :
+                             BufferRequestStatus::FAILED_UNKNOWN,
+            bufRets);
+    states.reqBufferIntf.endRequestBuffer();
+}
+
+void returnStreamBuffers(ReturnBufferStates& states,
+        const hardware::hidl_vec<hardware::camera::device::V3_2::StreamBuffer>& buffers) {
+    if (!states.useHalBufManager) {
+        ALOGE("%s: Camera %s does not support HAL buffer managerment",
+                __FUNCTION__, states.cameraId.string());
+        return;
+    }
+
+    for (const auto& buf : buffers) {
+        if (buf.bufferId == BUFFER_ID_NO_BUFFER) {
+            ALOGE("%s: cannot return a buffer without bufferId", __FUNCTION__);
+            continue;
+        }
+
+        buffer_handle_t* buffer;
+        status_t res = states.bufferRecordsIntf.popInflightRequestBuffer(buf.bufferId, &buffer);
+
+        if (res != OK) {
+            ALOGE("%s: cannot find in-flight buffer %" PRIu64 " for stream %d",
+                    __FUNCTION__, buf.bufferId, buf.streamId);
+            continue;
+        }
+
+        camera_stream_buffer_t streamBuffer;
+        streamBuffer.buffer = buffer;
+        streamBuffer.status = CAMERA_BUFFER_STATUS_ERROR;
+        streamBuffer.acquire_fence = -1;
+        streamBuffer.release_fence = -1;
+
+        if (buf.releaseFence == nullptr) {
+            streamBuffer.release_fence = -1;
+        } else if (buf.releaseFence->numFds == 1) {
+            streamBuffer.release_fence = dup(buf.releaseFence->data[0]);
+        } else {
+            ALOGE("%s: Invalid release fence, fd count is %d, not 1",
+                    __FUNCTION__, buf.releaseFence->numFds);
+            continue;
+        }
+
+        sp<Camera3StreamInterface> stream = states.outputStreams.get(buf.streamId);
+        if (stream == nullptr) {
+            ALOGE("%s: Output stream id %d not found!", __FUNCTION__, buf.streamId);
+            continue;
+        }
+        streamBuffer.stream = stream->asHalStream();
+        returnOutputBuffers(states.useHalBufManager, /*listener*/nullptr,
+                &streamBuffer, /*size*/1, /*timestamp*/ 0, /*requested*/false,
+                /*requestTimeNs*/0, states.sessionStatsBuilder);
+    }
+}
+
 void flushInflightRequests(FlushInflightReqStates& states) {
     ATRACE_CALL();
     { // First return buffers cached in inFlightMap
@@ -1162,10 +1491,9 @@ void flushInflightRequests(FlushInflightReqStates& states) {
             returnOutputBuffers(
                 states.useHalBufManager, states.listener,
                 request.pendingOutputBuffers.array(),
-                request.pendingOutputBuffers.size(), /*timestamp*/0, /*readoutTimestamp*/0,
-                /*requested*/true, request.requestTimeNs, states.sessionStatsBuilder,
-                /*timestampIncreasing*/true, request.outputSurfaces, request.resultExtras,
-                request.errorBufStrategy);
+                request.pendingOutputBuffers.size(), 0, /*requested*/true,
+                request.requestTimeNs, states.sessionStatsBuilder, /*timestampIncreasing*/true,
+                request.outputSurfaces, request.resultExtras, request.errorBufStrategy);
             ALOGW("%s: Frame %d |  Timestamp: %" PRId64 ", metadata"
                     " arrived: %s, buffers left: %d.\n", __FUNCTION__,
                     states.inflightMap.keyAt(idx), request.shutterTimestamp,
@@ -1237,7 +1565,7 @@ void flushInflightRequests(FlushInflightReqStates& states) {
                 switch (halStream->stream_type) {
                     case CAMERA_STREAM_OUTPUT:
                         res = stream->returnBuffer(streamBuffer, /*timestamp*/ 0,
-                                /*readoutTimestamp*/0, /*timestampIncreasing*/true,
+                                /*timestampIncreasing*/true,
                                 std::vector<size_t> (), frameNumber);
                         if (res != OK) {
                             ALOGE("%s: Can't return output buffer for frame %d to"

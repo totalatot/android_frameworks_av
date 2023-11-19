@@ -19,8 +19,6 @@
 
 #include "common/CameraDeviceBase.h"
 #include "camera/CaptureResult.h"
-#include "utils/CameraServiceProxyWrapper.h"
-#include "CameraServiceWatchdog.h"
 
 namespace android {
 
@@ -49,9 +47,7 @@ public:
     // TODO: too many params, move into a ClientArgs<T>
     Camera2ClientBase(const sp<CameraService>& cameraService,
                       const sp<TCamCallbacks>& remoteCallback,
-                      std::shared_ptr<CameraServiceProxyWrapper> cameraServiceProxyWrapper,
                       const String16& clientPackageName,
-                      bool systemNativeClient,
                       const std::optional<String16>& clientFeatureId,
                       const String8& cameraId,
                       int api1CameraId,
@@ -61,15 +57,11 @@ public:
                       uid_t clientUid,
                       int servicePid,
                       bool overrideForPerfClass,
-                      bool overrideToPortrait,
                       bool legacyClient = false);
     virtual ~Camera2ClientBase();
 
     virtual status_t      initialize(sp<CameraProviderManager> manager, const String8& monitorTags);
     virtual status_t      dumpClient(int fd, const Vector<String16>& args);
-    virtual status_t      startWatchingTags(const String8 &tags, int out);
-    virtual status_t      stopWatchingTags(int out);
-    virtual status_t      dumpWatchedEventsToVector(std::vector<std::string> &out);
 
     /**
      * NotificationListener implementation
@@ -77,12 +69,10 @@ public:
 
     virtual void          notifyError(int32_t errorCode,
                                       const CaptureResultExtras& resultExtras);
-    virtual void          notifyPhysicalCameraChange(const std::string &physicalId) override;
-    // Returns errors on app ops permission failures
-    virtual status_t      notifyActive(float maxPreviewFps);
-    virtual void          notifyIdle(int64_t /*requestCount*/, int64_t /*resultErrorCount*/,
-                                     bool /*deviceError*/,
-                                     const std::vector<hardware::CameraStreamStats>&) {}
+    virtual status_t      notifyActive();  // Returns errors on app ops permission failures
+    virtual void          notifyIdle(int64_t requestCount, int64_t resultErrorCount,
+                                     bool deviceError,
+                                     const std::vector<hardware::CameraStreamStats>& streamStats);
     virtual void          notifyShutter(const CaptureResultExtras& resultExtras,
                                         nsecs_t timestamp);
     virtual void          notifyAutoFocus(uint8_t newState, int triggerId);
@@ -92,11 +82,6 @@ public:
     virtual void          notifyPrepared(int streamId);
     virtual void          notifyRequestQueueEmpty();
     virtual void          notifyRepeatingRequestError(long lastFrameNumber);
-
-    void                  notifyIdleWithUserTag(int64_t requestCount, int64_t resultErrorCount,
-                                     bool deviceError,
-                                     const std::vector<hardware::CameraStreamStats>& streamStats,
-                                     const std::string& userTag, int videoStabilizationMode);
 
     int                   getCameraId() const;
     const sp<CameraDeviceBase>&
@@ -130,20 +115,10 @@ public:
         mutable Mutex mRemoteCallbackLock;
     } mSharedCameraCallbacks;
 
-    status_t      injectCamera(const String8& injectedCamId,
-                               sp<CameraProviderManager> manager) override;
-    status_t      stopInjection() override;
-
 protected:
-
-    // Used for watchdog timeout to monitor disconnect
-    static const nsecs_t kBufferTimeDisconnectNs = 3000000000; // 3 sec.
 
     // The PID provided in the constructor call
     pid_t mInitialClientPid;
-    bool mOverrideForPerfClass = false;
-    bool mLegacyClient = false;
-    std::shared_ptr<CameraServiceProxyWrapper> mCameraServiceProxyWrapper;
 
     virtual sp<IBinder> asBinderWrapper() {
         return IInterface::asBinder(this);
@@ -161,12 +136,11 @@ protected:
 
     /** CameraDeviceBase instance wrapping HAL3+ entry */
 
-    // Note: This was previously set to const to avoid mDevice being updated -
-    // b/112639939 (update of sp<> is racy) during dumpDevice (which is important to be lock free
-    // for debugging purpose). The const has been removed since CameraDeviceBase
-    // needs to be set during initializeImpl(). This must not be set / cleared
-    // anywhere else.
-    sp<CameraDeviceBase>  mDevice;
+    const int mDeviceVersion;
+
+    // Set to const to avoid mDevice being updated (update of sp<> is racy) during
+    // dumpDevice (which is important to be lock free for debugging purpose)
+    const sp<CameraDeviceBase>  mDevice;
 
     /** Utility members */
 
@@ -182,12 +156,6 @@ protected:
 private:
     template<typename TProviderPtr>
     status_t              initializeImpl(TProviderPtr providerPtr, const String8& monitorTags);
-
-    binder::Status disconnectImpl();
-
-    // Watchdog thread
-    sp<CameraServiceWatchdog> mCameraServiceWatchdog;
-
 };
 
 }; // namespace android

@@ -29,7 +29,6 @@
 #include <android/hardware/camera2/ICameraDeviceUser.h>
 #include <android/hardware/graphics/bufferqueue/1.0/IGraphicBufferProducer.h>
 #include <android/hardware/ICameraService.h>
-#include <camera/CameraMetadata.h>
 #include <fmq/MessageQueue.h>
 #include <hardware/camera.h>
 #include <hidl/MQDescriptor.h>

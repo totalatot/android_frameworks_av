@@ -38,16 +38,17 @@ const char* CameraManagerGlobal::kCallbackFpKey = "CallbackFp";
 const char* CameraManagerGlobal::kContextKey    = "CallbackContext";
 const nsecs_t CameraManagerGlobal::kCallbackDrainTimeout = 5000000; // 5 ms
 Mutex                CameraManagerGlobal::sLock;
-wp<CameraManagerGlobal> CameraManagerGlobal::sInstance = nullptr;
+CameraManagerGlobal* CameraManagerGlobal::sInstance = nullptr;
 
-sp<CameraManagerGlobal> CameraManagerGlobal::getInstance() {
+CameraManagerGlobal&
+CameraManagerGlobal::getInstance() {
     Mutex::Autolock _l(sLock);
-    sp<CameraManagerGlobal> instance = sInstance.promote();
+    CameraManagerGlobal* instance = sInstance;
     if (instance == nullptr) {
         instance = new CameraManagerGlobal();
         sInstance = instance;
     }
-    return instance;
+    return *instance;
 }
 
 CameraManagerGlobal::~CameraManagerGlobal() {
@@ -188,12 +189,8 @@ void CameraManagerGlobal::DeathNotifier::binderDied(const wp<IBinder>&)
     sp<CameraManagerGlobal> cm = mCameraManager.promote();
     if (cm != nullptr) {
         AutoMutex lock(cm->mLock);
-        std::vector<String8> cameraIdList;
         for (auto& pair : cm->mDeviceStatusMap) {
-            cameraIdList.push_back(pair.first);
-        }
-
-        for (String8 cameraId : cameraIdList) {
+            const String8 &cameraId = pair.first;
             cm->onStatusChangedLocked(
                     CameraServiceListener::STATUS_NOT_PRESENT, cameraId);
         }
@@ -636,7 +633,7 @@ ACameraManager::getCameraIdList(ACameraIdList** cameraIdList) {
     Mutex::Autolock _l(mLock);
 
     std::vector<String8> idList;
-    CameraManagerGlobal::getInstance()->getCameraIdList(&idList);
+    CameraManagerGlobal::getInstance().getCameraIdList(&idList);
 
     int numCameras = idList.size();
     ACameraIdList *out = new ACameraIdList;
@@ -686,16 +683,15 @@ camera_status_t ACameraManager::getCameraCharacteristics(
         const char* cameraIdStr, sp<ACameraMetadata>* characteristics) {
     Mutex::Autolock _l(mLock);
 
-    sp<hardware::ICameraService> cs = CameraManagerGlobal::getInstance()->getCameraService();
+    sp<hardware::ICameraService> cs = CameraManagerGlobal::getInstance().getCameraService();
     if (cs == nullptr) {
         ALOGE("%s: Cannot reach camera service!", __FUNCTION__);
         return ACAMERA_ERROR_CAMERA_DISCONNECTED;
     }
-
     CameraMetadata rawMetadata;
     int targetSdkVersion = android_get_application_target_sdk_version();
     binder::Status serviceRet = cs->getCameraCharacteristics(String16(cameraIdStr),
-            targetSdkVersion, /*overrideToPortrait*/false, &rawMetadata);
+            targetSdkVersion, &rawMetadata);
     if (!serviceRet.isOk()) {
         switch(serviceRet.serviceSpecificErrorCode()) {
             case hardware::ICameraService::ERROR_DISCONNECTED:
@@ -732,7 +728,7 @@ ACameraManager::openCamera(
 
     ACameraDevice* device = new ACameraDevice(cameraId, callback, chars);
 
-    sp<hardware::ICameraService> cs = CameraManagerGlobal::getInstance()->getCameraService();
+    sp<hardware::ICameraService> cs = CameraManagerGlobal::getInstance().getCameraService();
     if (cs == nullptr) {
         ALOGE("%s: Cannot reach camera service!", __FUNCTION__);
         delete device;
@@ -747,7 +743,7 @@ ACameraManager::openCamera(
     binder::Status serviceRet = cs->connectDevice(
             callbacks, String16(cameraId), String16(""), {},
             hardware::ICameraService::USE_CALLING_UID, /*oomScoreOffset*/0,
-            targetSdkVersion, /*overrideToPortrait*/false, /*out*/&deviceRemote);
+            targetSdkVersion, /*out*/&deviceRemote);
 
     if (!serviceRet.isOk()) {
         ALOGE("%s: connect camera device failed: %s", __FUNCTION__, serviceRet.toString8().string());

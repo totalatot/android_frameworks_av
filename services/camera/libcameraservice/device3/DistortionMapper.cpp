@@ -22,7 +22,7 @@
 #include <cmath>
 
 #include "device3/DistortionMapper.h"
-#include "utils/SessionConfigurationUtilsHost.h"
+#include "utils/SessionConfigurationUtils.h"
 
 namespace android {
 
@@ -67,7 +67,7 @@ status_t DistortionMapper::setupStaticInfo(const CameraMetadata &deviceInfo) {
         return res;
     }
 
-    bool mMaxResolution = SessionConfigurationUtils::supportsUltraHighResolutionCapture(deviceInfo);
+    bool mMaxResolution = SessionConfigurationUtils::isUltraHighResolutionSensor(deviceInfo);
     if (mMaxResolution) {
         res = setupStaticInfoLocked(deviceInfo, /*maxResolution*/true);
     }

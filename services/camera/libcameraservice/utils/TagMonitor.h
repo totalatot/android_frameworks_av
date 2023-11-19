@@ -30,7 +30,6 @@
 #include <system/camera_metadata.h>
 #include <system/camera_vendor_tags.h>
 #include <camera/CameraMetadata.h>
-#include <device3/InFlightRequest.h>
 
 namespace android {
 
@@ -67,31 +66,19 @@ class TagMonitor {
     // Scan through the metadata and update the monitoring information
     void monitorMetadata(eventSource source, int64_t frameNumber,
             nsecs_t timestamp, const CameraMetadata& metadata,
-            const std::unordered_map<std::string, CameraMetadata>& physicalMetadata,
-            const camera3::camera_stream_buffer_t *outputBuffers = nullptr,
-            uint32_t numOutputBuffers = 0, int32_t inputStreamId = -1);
+            const std::unordered_map<std::string, CameraMetadata>& physicalMetadata);
 
     // Dump current event log to the provided fd
     void dumpMonitoredMetadata(int fd);
 
-    // Dumps the latest monitored Tag events to the passed vector.
-    // NOTE: The events are appended to the vector in reverser chronological order
-    // (i.e. most recent first)
-    void getLatestMonitoredTagEvents(std::vector<std::string> &out);
-
   private:
-    // Dumps monitored tag events to the passed vector without acquiring
-    // mMonitorMutex. mMonitorMutex must be acquired before calling this
-    // function.
-    void dumpMonitoredTagEventsToVectorLocked(std::vector<std::string> &out);
 
-    static String8 getEventDataString(const uint8_t* data_ptr, uint32_t tag, int type, int count,
-                                      int indentation);
+    static void printData(int fd, const uint8_t *data_ptr, uint32_t tag,
+            int type, int count, int indentation);
 
     void monitorSingleMetadata(TagMonitor::eventSource source, int64_t frameNumber,
             nsecs_t timestamp, const std::string& cameraId, uint32_t tag,
-            const CameraMetadata& metadata, const std::unordered_set<int32_t> &outputStreamIds,
-            int32_t inputStreamId);
+            const CameraMetadata& metadata);
 
     std::atomic<bool> mMonitoringEnabled;
     std::mutex mMonitorMutex;
@@ -106,9 +93,6 @@ class TagMonitor {
     std::unordered_map<std::string, CameraMetadata> mLastMonitoredPhysicalRequestKeys;
     std::unordered_map<std::string, CameraMetadata> mLastMonitoredPhysicalResultKeys;
 
-    int32_t mLastInputStreamId = -1;
-    std::unordered_set<int32_t> mLastStreamIds;
-
     /**
      * A monitoring event
      * Stores a new metadata field value and the timestamp at which it changed.
@@ -117,22 +101,16 @@ class TagMonitor {
     struct MonitorEvent {
         template<typename T>
         MonitorEvent(eventSource src, uint32_t frameNumber, nsecs_t timestamp,
-                const T &newValue, const std::string& cameraId,
-                const std::unordered_set<int32_t> &outputStreamIds, int32_t inputStreamId);
+                const T &newValue, const std::string& cameraId);
         ~MonitorEvent();
 
         eventSource source;
         uint32_t frameNumber;
         nsecs_t timestamp;
-        std::string cameraId;
         uint32_t tag;
         uint8_t type;
         std::vector<uint8_t> newData;
-        // NOTE: We want to print changes to outputStreamIds and inputStreamId in their own lines.
-        // So any MonitorEvent where these fields are not the default value will have garbage
-        // values for all fields other than source, frameNumber, timestamp, and cameraId.
-        std::unordered_set<int32_t> outputStreamIds;
-        int32_t inputStreamId = -1;
+        std::string cameraId;
     };
 
     // A ring buffer for tracking the last kMaxMonitorEvents metadata changes

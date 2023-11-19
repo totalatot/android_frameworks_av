@@ -29,11 +29,6 @@ using binder::Status;
 status_t CameraOfflineSessionClient::initialize(sp<CameraProviderManager>, const String8&) {
     ATRACE_CALL();
 
-    if (mFrameProcessor.get() != nullptr) {
-        // Already initialized
-        return OK;
-    }
-
     // Verify ops permissions
     auto res = startCameraOps();
     if (res != OK) {
@@ -49,12 +44,7 @@ status_t CameraOfflineSessionClient::initialize(sp<CameraProviderManager>, const
     String8 threadName;
     mFrameProcessor = new camera2::FrameProcessorBase(mOfflineSession);
     threadName = String8::format("Offline-%s-FrameProc", mCameraIdStr.string());
-    res = mFrameProcessor->run(threadName.string());
-    if (res != OK) {
-        ALOGE("%s: Unable to start frame processor thread: %s (%d)",
-                __FUNCTION__, strerror(-res), res);
-        return res;
-    }
+    mFrameProcessor->run(threadName.string());
 
     mFrameProcessor->registerListener(camera2::FrameProcessorBase::FRAME_PROCESSOR_LISTENER_MIN_ID,
                                       camera2::FrameProcessorBase::FRAME_PROCESSOR_LISTENER_MAX_ID,
@@ -76,17 +66,9 @@ status_t CameraOfflineSessionClient::initialize(sp<CameraProviderManager>, const
     return OK;
 }
 
-status_t CameraOfflineSessionClient::setCameraServiceWatchdog(bool) {
-    return OK;
-}
-
 status_t CameraOfflineSessionClient::setRotateAndCropOverride(uint8_t /*rotateAndCrop*/) {
     // Since we're not submitting more capture requests, changes to rotateAndCrop override
     // make no difference.
-    return OK;
-}
-
-status_t CameraOfflineSessionClient::setAutoframingOverride(uint8_t) {
     return OK;
 }
 
@@ -99,20 +81,6 @@ status_t CameraOfflineSessionClient::setCameraMute(bool) {
     return INVALID_OPERATION;
 }
 
-void CameraOfflineSessionClient::setStreamUseCaseOverrides(
-        const std::vector<int64_t>& /*useCaseOverrides*/) {
-}
-
-void CameraOfflineSessionClient::clearStreamUseCaseOverrides() {
-}
-
-bool CameraOfflineSessionClient::supportsZoomOverride() {
-    return false;
-}
-
-status_t CameraOfflineSessionClient::setZoomOverride(int32_t /*zoomOverride*/) {
-    return INVALID_OPERATION;
-}
 
 status_t CameraOfflineSessionClient::dump(int fd, const Vector<String16>& args) {
     return BasicClient::dump(fd, args);
@@ -140,18 +108,6 @@ status_t CameraOfflineSessionClient::dumpClient(int fd, const Vector<String16>& 
     }
 
     return OK;
-}
-
-status_t CameraOfflineSessionClient::startWatchingTags(const String8 &tags, int outFd) {
-    return BasicClient::startWatchingTags(tags, outFd);
-}
-
-status_t CameraOfflineSessionClient::stopWatchingTags(int outFd) {
-    return BasicClient::stopWatchingTags(outFd);
-}
-
-status_t CameraOfflineSessionClient::dumpWatchedEventsToVector(std::vector<std::string> &out) {
-    return BasicClient::dumpWatchedEventsToVector(out);
 }
 
 binder::Status CameraOfflineSessionClient::disconnect() {
@@ -264,7 +220,7 @@ status_t CameraOfflineSessionClient::startCameraOps() {
     mOpsActive = true;
 
     // Transition device state to OPEN
-    sCameraService->mUidPolicy->registerMonitorUid(mClientUid, /*openCamera*/true);
+    sCameraService->mUidPolicy->registerMonitorUid(mClientUid);
 
     return OK;
 }
@@ -288,7 +244,7 @@ status_t CameraOfflineSessionClient::finishCameraOps() {
     }
     mOpsCallback.clear();
 
-    sCameraService->mUidPolicy->unregisterMonitorUid(mClientUid, /*closeCamera*/true);
+    sCameraService->mUidPolicy->unregisterMonitorUid(mClientUid);
 
     return OK;
 }
@@ -319,7 +275,7 @@ void CameraOfflineSessionClient::notifyShutter(const CaptureResultExtras& result
     }
 }
 
-status_t CameraOfflineSessionClient::notifyActive(float maxPreviewFps __unused) {
+status_t CameraOfflineSessionClient::notifyActive() {
     return startCameraStreamingOps();
 }
 
@@ -332,20 +288,26 @@ void CameraOfflineSessionClient::notifyIdle(
     finishCameraStreamingOps();
 }
 
-void CameraOfflineSessionClient::notifyAutoFocus([[maybe_unused]] uint8_t newState,
-                [[maybe_unused]] int triggerId) {
+void CameraOfflineSessionClient::notifyAutoFocus(uint8_t newState, int triggerId) {
+    (void)newState;
+    (void)triggerId;
+
     ALOGV("%s: Autofocus state now %d, last trigger %d",
           __FUNCTION__, newState, triggerId);
 }
 
-void CameraOfflineSessionClient::notifyAutoExposure([[maybe_unused]] uint8_t newState,
-                [[maybe_unused]] int triggerId) {
+void CameraOfflineSessionClient::notifyAutoExposure(uint8_t newState, int triggerId) {
+    (void)newState;
+    (void)triggerId;
+
     ALOGV("%s: Autoexposure state now %d, last trigger %d",
             __FUNCTION__, newState, triggerId);
 }
 
-void CameraOfflineSessionClient::notifyAutoWhitebalance([[maybe_unused]] uint8_t newState,
-                [[maybe_unused]] int triggerId) {
+void CameraOfflineSessionClient::notifyAutoWhitebalance(uint8_t newState, int triggerId) {
+    (void)newState;
+    (void)triggerId;
+
     ALOGV("%s: Auto-whitebalance state now %d, last trigger %d", __FUNCTION__, newState,
             triggerId);
 }
@@ -366,20 +328,6 @@ void CameraOfflineSessionClient::notifyRepeatingRequestError(long /*lastFrameNum
     ALOGE("%s: Unexpected repeating request error in offline mode!", __FUNCTION__);
     notifyError(hardware::camera2::ICameraDeviceCallbacks::ERROR_CAMERA_DEVICE,
                 CaptureResultExtras());
-}
-
-status_t CameraOfflineSessionClient::injectCamera(const String8& injectedCamId,
-            sp<CameraProviderManager> manager) {
-    ALOGV("%s: This client doesn't support the injection camera. injectedCamId: %s providerPtr: %p",
-            __FUNCTION__, injectedCamId.string(), manager.get());
-
-    return OK;
-}
-
-status_t CameraOfflineSessionClient::stopInjection() {
-    ALOGV("%s: This client doesn't support the injection camera.", __FUNCTION__);
-
-    return OK;
 }
 
 // ----------------------------------------------------------------------------

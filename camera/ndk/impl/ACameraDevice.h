@@ -151,8 +151,6 @@ class CameraDevice final : public RefBase {
 
     camera_status_t updateOutputConfigurationLocked(ACaptureSessionOutput *output);
 
-    camera_status_t prepareLocked(ACameraWindowType *window);
-
     camera_status_t allocateCaptureRequest(
             const ACaptureRequest* request, sp<CaptureRequest>& outReq);
 
@@ -217,15 +215,13 @@ class CameraDevice final : public RefBase {
         kWhatSessionStateCb,   // onReady, onActive
         // Capture callbacks
         kWhatCaptureStart,     // onCaptureStarted
-        kWhatCaptureStart2,     // onCaptureStarted
         kWhatCaptureResult,    // onCaptureProgressed, onCaptureCompleted
         kWhatLogicalCaptureResult, // onLogicalCameraCaptureCompleted
         kWhatCaptureFail,      // onCaptureFailed
         kWhatLogicalCaptureFail, // onLogicalCameraCaptureFailed
         kWhatCaptureSeqEnd,    // onCaptureSequenceCompleted
         kWhatCaptureSeqAbort,  // onCaptureSequenceAborted
-        kWhatCaptureBufferLost, // onCaptureBufferLost
-        kWhatPreparedCb, // onWindowPrepared
+        kWhatCaptureBufferLost,// onCaptureBufferLost
         // Internal cleanup
         kWhatCleanUpSessions   // Cleanup cached sp<ACameraCaptureSession>
     };
@@ -298,18 +294,11 @@ class CameraDevice final : public RefBase {
                        const Vector<sp<CaptureRequest> >& requests,
                        bool                               isRepeating,
                        ACameraCaptureSession_logicalCamera_captureCallbacks* lcbs);
-        CallbackHolder(sp<ACameraCaptureSession>          session,
-                       const Vector<sp<CaptureRequest> >& requests,
-                       bool                               isRepeating,
-                       ACameraCaptureSession_captureCallbacksV2* cbs);
-        CallbackHolder(sp<ACameraCaptureSession>          session,
-                       const Vector<sp<CaptureRequest> >& requests,
-                       bool                               isRepeating,
-                       ACameraCaptureSession_logicalCamera_captureCallbacksV2* lcbs);
-        void clearCallbacks() {
+
+        template <class T>
+        void initCaptureCallbacks(T* cbs) {
             mContext = nullptr;
             mOnCaptureStarted = nullptr;
-            mOnCaptureStarted2 = nullptr;
             mOnCaptureProgressed = nullptr;
             mOnCaptureCompleted = nullptr;
             mOnLogicalCameraCaptureCompleted = nullptr;
@@ -318,24 +307,6 @@ class CameraDevice final : public RefBase {
             mOnCaptureSequenceCompleted = nullptr;
             mOnCaptureSequenceAborted = nullptr;
             mOnCaptureBufferLost = nullptr;
-        }
-
-        template <class T>
-        void initCaptureCallbacksV2(T* cbs) {
-            clearCallbacks();
-            if (cbs != nullptr) {
-                mContext = cbs->context;
-                mOnCaptureStarted2 = cbs->onCaptureStarted;
-                mOnCaptureProgressed = cbs->onCaptureProgressed;
-                mOnCaptureSequenceCompleted = cbs->onCaptureSequenceCompleted;
-                mOnCaptureSequenceAborted = cbs->onCaptureSequenceAborted;
-                mOnCaptureBufferLost = cbs->onCaptureBufferLost;
-            }
-        }
-
-        template <class T>
-        void initCaptureCallbacks(T* cbs) {
-            clearCallbacks();
             if (cbs != nullptr) {
                 mContext = cbs->context;
                 mOnCaptureStarted = cbs->onCaptureStarted;
@@ -349,11 +320,9 @@ class CameraDevice final : public RefBase {
         Vector<sp<CaptureRequest> > mRequests;
         const bool                  mIsRepeating;
         const bool                  mIsLogicalCameraCallback;
-        const bool                  mIs2Callback;
 
         void*                       mContext;
         ACameraCaptureSession_captureCallback_start mOnCaptureStarted;
-        ACameraCaptureSession_captureCallback_startV2 mOnCaptureStarted2;
         ACameraCaptureSession_captureCallback_result mOnCaptureProgressed;
         ACameraCaptureSession_captureCallback_result mOnCaptureCompleted;
         ACameraCaptureSession_logicalCamera_captureCallback_result mOnLogicalCameraCaptureCompleted;

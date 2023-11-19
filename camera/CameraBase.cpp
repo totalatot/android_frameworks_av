@@ -23,7 +23,6 @@
 #include <cutils/properties.h>
 
 #include <android/hardware/ICameraService.h>
-#include <com/android/internal/compat/IPlatformCompatNative.h>
 
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
@@ -69,9 +68,6 @@ status_t CameraStatus::writeToParcel(android::Parcel* parcel) const {
         unavailablePhysicalIds16.push_back(String16(id8));
     }
     res = parcel->writeString16Vector(unavailablePhysicalIds16);
-    if (res != OK) return res;
-
-    res = parcel->writeString16(String16(clientPackage));
     return res;
 }
 
@@ -90,12 +86,6 @@ status_t CameraStatus::readFromParcel(const android::Parcel* parcel) {
     for (auto& id16 : unavailablePhysicalIds16) {
         unavailablePhysicalIds.push_back(String8(id16));
     }
-
-    String16 tempClientPackage;
-    res = parcel->readString16(&tempClientPackage);
-    if (res != OK) return res;
-    clientPackage = String8(tempClientPackage);
-
     return res;
 }
 
@@ -162,8 +152,7 @@ const sp<::android::hardware::ICameraService> CameraBase<TCam, TCamTraits>::getC
 template <typename TCam, typename TCamTraits>
 sp<TCam> CameraBase<TCam, TCamTraits>::connect(int cameraId,
                                                const String16& clientPackageName,
-                                               int clientUid, int clientPid, int targetSdkVersion,
-                                               bool overrideToPortrait, bool forceSlowJpegMode)
+                                               int clientUid, int clientPid, int targetSdkVersion)
 {
     ALOGV("%s: connect", __FUNCTION__);
     sp<TCam> c = new TCam(cameraId);
@@ -173,11 +162,8 @@ sp<TCam> CameraBase<TCam, TCamTraits>::connect(int cameraId,
     binder::Status ret;
     if (cs != nullptr) {
         TCamConnectService fnConnectService = TCamTraits::fnConnectService;
-        ALOGI("Connect camera (legacy API) - overrideToPortrait %d, forceSlowJpegMode %d",
-                overrideToPortrait, forceSlowJpegMode);
         ret = (cs.get()->*fnConnectService)(cl, cameraId, clientPackageName, clientUid,
-                clientPid, targetSdkVersion, overrideToPortrait, forceSlowJpegMode,
-                 /*out*/ &c->mCamera);
+                                               clientPid, targetSdkVersion, /*out*/ &c->mCamera);
     }
     if (ret.isOk() && c->mCamera != nullptr) {
         IInterface::asBinder(c->mCamera)->linkToDeath(c);
@@ -278,11 +264,10 @@ int CameraBase<TCam, TCamTraits>::getNumberOfCameras() {
 // this can be in BaseCamera but it should be an instance method
 template <typename TCam, typename TCamTraits>
 status_t CameraBase<TCam, TCamTraits>::getCameraInfo(int cameraId,
-        bool overrideToPortrait,
         struct hardware::CameraInfo* cameraInfo) {
     const sp<::android::hardware::ICameraService> cs = getCameraService();
     if (cs == 0) return UNKNOWN_ERROR;
-    binder::Status res = cs->getCameraInfo(cameraId, overrideToPortrait, cameraInfo);
+    binder::Status res = cs->getCameraInfo(cameraId, cameraInfo);
     return res.isOk() ? OK : res.serviceSpecificErrorCode();
 }
 

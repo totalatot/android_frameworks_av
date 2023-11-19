@@ -102,57 +102,23 @@ struct TestICameraProvider : virtual public provider::V2_5::ICameraProvider {
     sp<device::V3_2::ICameraDevice> mDeviceInterface;
     hardware::hidl_vec<common::V1_0::VendorTagSection> mVendorTagSections;
 
-    // Whether to call a physical camera unavailable callback upon setCallback
-    bool mHasPhysicalCameraUnavailableCallback;
-    hardware::hidl_string mLogicalCameraId;
-    hardware::hidl_string mUnavailablePhysicalCameraId;
-
     TestICameraProvider(const std::vector<hardware::hidl_string> &devices,
             const hardware::hidl_vec<common::V1_0::VendorTagSection> &vendorSection) :
         mDeviceNames(devices),
         mDeviceInterface(new TestDeviceInterface(devices)),
-        mVendorTagSections (vendorSection),
-        mHasPhysicalCameraUnavailableCallback(false) {}
+        mVendorTagSections (vendorSection) {}
 
     TestICameraProvider(const std::vector<hardware::hidl_string> &devices,
             const hardware::hidl_vec<common::V1_0::VendorTagSection> &vendorSection,
             android::hardware::hidl_vec<uint8_t> chars) :
         mDeviceNames(devices),
         mDeviceInterface(new TestDeviceInterface(devices, chars)),
-        mVendorTagSections (vendorSection),
-        mHasPhysicalCameraUnavailableCallback(false) {}
-
-    TestICameraProvider(const std::vector<hardware::hidl_string> &devices,
-            const hardware::hidl_vec<common::V1_0::VendorTagSection> &vendorSection,
-            android::hardware::hidl_vec<uint8_t> chars,
-            const hardware::hidl_string& logicalCameraId,
-            const hardware::hidl_string& unavailablePhysicalCameraId) :
-        mDeviceNames(devices),
-        mDeviceInterface(new TestDeviceInterface(devices, chars)),
-        mVendorTagSections (vendorSection),
-        mHasPhysicalCameraUnavailableCallback(true),
-        mLogicalCameraId(logicalCameraId),
-        mUnavailablePhysicalCameraId(unavailablePhysicalCameraId) {}
+        mVendorTagSections (vendorSection) {}
 
     virtual hardware::Return<Status> setCallback(
             const sp<provider::V2_4::ICameraProviderCallback>& callbacks) override {
         mCalledCounter[SET_CALLBACK]++;
         mCallbacks = callbacks;
-        if (mHasPhysicalCameraUnavailableCallback) {
-            auto cast26 = provider::V2_6::ICameraProviderCallback::castFrom(callbacks);
-            if (!cast26.isOk()) {
-                ADD_FAILURE() << "Failed to cast ICameraProviderCallback to V2_6";
-            } else {
-                sp<provider::V2_6::ICameraProviderCallback> callback26 = cast26;
-                if (callback26 == nullptr) {
-                    ADD_FAILURE() << "V2_6::ICameraProviderCallback is null after conversion";
-                } else {
-                    callback26->physicalCameraDeviceStatusChange(mLogicalCameraId,
-                            mUnavailablePhysicalCameraId,
-                            android::hardware::camera::common::V1_0::CameraDeviceStatus::NOT_PRESENT);
-                }
-            }
-        }
         return hardware::Return<Status>(Status::OK);
     }
 
@@ -185,8 +151,9 @@ struct TestICameraProvider : virtual public provider::V2_5::ICameraProvider {
     using getCameraDeviceInterface_V1_x_cb = std::function<void(Status status,
             const sp<device::V1_0::ICameraDevice>& device)>;
     virtual hardware::Return<void> getCameraDeviceInterface_V1_x(
-            [[maybe_unused]] const hardware::hidl_string& cameraDeviceName,
+            const hardware::hidl_string& cameraDeviceName,
             getCameraDeviceInterface_V1_x_cb _hidl_cb) override {
+        (void) cameraDeviceName;
         _hidl_cb(Status::OK, nullptr); //TODO: impl. of ver. 1.0 device interface
                                        //      otherwise enumeration will fail.
         return hardware::Void();
@@ -245,7 +212,7 @@ struct TestICameraProvider : virtual public provider::V2_5::ICameraProvider {
  * Simple test version of the interaction proxy, to use to inject onRegistered calls to the
  * CameraProviderManager
  */
-struct TestInteractionProxy : public CameraProviderManager::HidlServiceInteractionProxy {
+struct TestInteractionProxy : public CameraProviderManager::ServiceInteractionProxy {
     sp<hidl::manager::V1_0::IServiceNotification> mManagerNotificationInterface;
     sp<TestICameraProvider> mTestCameraProvider;
 
@@ -260,8 +227,9 @@ struct TestInteractionProxy : public CameraProviderManager::HidlServiceInteracti
     virtual ~TestInteractionProxy() {}
 
     virtual bool registerForNotifications(
-            [[maybe_unused]] const std::string &serviceName,
+            const std::string &serviceName,
             const sp<hidl::manager::V1_0::IServiceNotification> &notification) override {
+        (void) serviceName;
         mManagerNotificationInterface = notification;
         return true;
     }
@@ -298,20 +266,14 @@ struct TestInteractionProxy : public CameraProviderManager::HidlServiceInteracti
 };
 
 struct TestStatusListener : public CameraProviderManager::StatusListener {
-    int mPhysicalCameraStatusChangeCount = 0;
-
     ~TestStatusListener() {}
 
     void onDeviceStatusChanged(const String8 &,
-            CameraDeviceStatus) override {}
+            hardware::camera::common::V1_0::CameraDeviceStatus) override {}
     void onDeviceStatusChanged(const String8 &, const String8 &,
-            CameraDeviceStatus) override {
-        mPhysicalCameraStatusChangeCount++;
-    }
+            hardware::camera::common::V1_0::CameraDeviceStatus) override {}
     void onTorchStatusChanged(const String8 &,
-            TorchModeStatus) override {}
-    void onTorchStatusChanged(const String8 &,
-            TorchModeStatus, SystemCameraKind) override {}
+            hardware::camera::common::V1_0::TorchModeStatus) override {}
     void onNewProviderRegistered() override {}
 };
 
@@ -669,47 +631,4 @@ TEST(CameraProviderManagerTest, BinderDeathRegistrationRaceTest) {
     auto deviceCount = static_cast<unsigned> (providerManager->getCameraCount().second);
     ASSERT_EQ(deviceCount, deviceNames.size()) <<
             "Unexpected amount of camera devices";
-}
-
-// Test that CameraProviderManager does not trigger
-// onDeviceStatusChanged(NOT_PRESENT) for physical camera before initialize()
-// returns.
-TEST(CameraProviderManagerTest, PhysicalCameraAvailabilityCallbackRaceTest) {
-    std::vector<hardware::hidl_string> deviceNames;
-    deviceNames.push_back("device@3.2/test/0");
-    hardware::hidl_vec<common::V1_0::VendorTagSection> vendorSection;
-
-    sp<CameraProviderManager> providerManager = new CameraProviderManager();
-    sp<TestStatusListener> statusListener = new TestStatusListener();
-    TestInteractionProxy serviceProxy;
-
-    android::hardware::hidl_vec<uint8_t> chars;
-    CameraMetadata meta;
-    int32_t charKeys[] = { ANDROID_REQUEST_AVAILABLE_CAPABILITIES };
-    meta.update(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS, charKeys,
-            sizeof(charKeys) / sizeof(charKeys[0]));
-    uint8_t capabilities[] = { ANDROID_REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA };
-    meta.update(ANDROID_REQUEST_AVAILABLE_CAPABILITIES, capabilities,
-            sizeof(capabilities)/sizeof(capabilities[0]));
-    uint8_t physicalCameraIds[] = { '2', '\0', '3', '\0' };
-    meta.update(ANDROID_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS, physicalCameraIds,
-            sizeof(physicalCameraIds)/sizeof(physicalCameraIds[0]));
-    camera_metadata_t* metaBuffer = const_cast<camera_metadata_t*>(meta.getAndLock());
-    chars.setToExternal(reinterpret_cast<uint8_t*>(metaBuffer),
-            get_camera_metadata_size(metaBuffer));
-
-    sp<TestICameraProvider> provider = new TestICameraProvider(deviceNames,
-            vendorSection, chars, "device@3.2/test/0", "2");
-    serviceProxy.setProvider(provider);
-
-    status_t res = providerManager->initialize(statusListener, &serviceProxy);
-    ASSERT_EQ(res, OK) << "Unable to initialize provider manager";
-
-    ASSERT_EQ(statusListener->mPhysicalCameraStatusChangeCount, 0)
-            << "Unexpected physical camera status change callback upon provider init.";
-
-    std::unordered_map<std::string, std::set<std::string>> unavailablePhysicalIds;
-    auto cameraIds = providerManager->getCameraDeviceIds(&unavailablePhysicalIds);
-    ASSERT_TRUE(unavailablePhysicalIds.count("0") > 0 && unavailablePhysicalIds["0"].count("2") > 0)
-        << "Unavailable physical camera Ids not set properly.";
 }

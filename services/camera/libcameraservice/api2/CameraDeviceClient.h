@@ -22,14 +22,12 @@
 #include <camera/camera2/OutputConfiguration.h>
 #include <camera/camera2/SessionConfiguration.h>
 #include <camera/camera2/SubmitInfo.h>
-#include <unordered_map>
 
 #include "CameraOfflineSessionClient.h"
 #include "CameraService.h"
 #include "common/FrameProcessorBase.h"
 #include "common/Camera2ClientBase.h"
 #include "CompositeStream.h"
-#include "utils/CameraServiceProxyWrapper.h"
 #include "utils/SessionConfigurationUtils.h"
 
 using android::camera3::OutputStreamInfo;
@@ -51,7 +49,6 @@ protected:
     CameraDeviceClientBase(const sp<CameraService>& cameraService,
             const sp<hardware::camera2::ICameraDeviceCallbacks>& remoteCallback,
             const String16& clientPackageName,
-            bool systemNativeClient,
             const std::optional<String16>& clientFeatureId,
             const String8& cameraId,
             int api1CameraId,
@@ -59,8 +56,7 @@ protected:
             int sensorOrientation,
             int clientPid,
             uid_t clientUid,
-            int servicePid,
-            bool overrideToPortrait);
+            int servicePid);
 
     sp<hardware::camera2::ICameraDeviceCallbacks> mRemoteCallback;
 };
@@ -180,9 +176,7 @@ public:
 
     CameraDeviceClient(const sp<CameraService>& cameraService,
             const sp<hardware::camera2::ICameraDeviceCallbacks>& remoteCallback,
-            std::shared_ptr<CameraServiceProxyWrapper> cameraServiceProxyWrapper,
             const String16& clientPackageName,
-            bool clientPackageOverride,
             const std::optional<String16>& clientFeatureId,
             const String8& cameraId,
             int cameraFacing,
@@ -190,8 +184,7 @@ public:
             int clientPid,
             uid_t clientUid,
             int servicePid,
-            bool overrideForPerfClass,
-            bool overrideToPortrait);
+            bool overrideForPerfClass);
     virtual ~CameraDeviceClient();
 
     virtual status_t      initialize(sp<CameraProviderManager> manager,
@@ -199,26 +192,12 @@ public:
 
     virtual status_t      setRotateAndCropOverride(uint8_t rotateAndCrop) override;
 
-    virtual status_t      setAutoframingOverride(uint8_t autoframingValue) override;
-
     virtual bool          supportsCameraMute();
     virtual status_t      setCameraMute(bool enabled);
-
-    virtual bool          supportsZoomOverride() override;
-    virtual status_t      setZoomOverride(int32_t zoomOverride) override;
 
     virtual status_t      dump(int fd, const Vector<String16>& args);
 
     virtual status_t      dumpClient(int fd, const Vector<String16>& args);
-
-    virtual status_t      startWatchingTags(const String8 &tags, int out);
-    virtual status_t      stopWatchingTags(int out);
-    virtual status_t      dumpWatchedEventsToVector(std::vector<std::string> &out);
-
-    virtual status_t      setCameraServiceWatchdog(bool enabled);
-
-    virtual void          setStreamUseCaseOverrides(const std::vector<int64_t>& useCaseOverrides);
-    virtual void          clearStreamUseCaseOverrides() override;
 
     /**
      * Device listener interface
@@ -243,9 +222,9 @@ protected:
     virtual void          detachDevice();
 
     // Calculate the ANativeWindow transform from android.sensor.orientation
-    status_t              getRotationTransformLocked(int mirrorMode, /*out*/int32_t* transform);
+    status_t              getRotationTransformLocked(/*out*/int32_t* transform);
 
-    bool supportsUltraHighResolutionCapture(const String8 &cameraId);
+    bool isUltraHighResolutionSensor(const String8 &cameraId);
 
     bool isSensorPixelModeConsistent(const std::list<int> &streamIdList,
             const CameraMetadata &settings);
@@ -303,7 +282,7 @@ private:
 
     // Set the stream transform flags to automatically rotate the camera stream for preview use
     // cases.
-    binder::Status setStreamTransformLocked(int streamId, int mirrorMode);
+    binder::Status setStreamTransformLocked(int streamId);
 
     // Utility method to insert the surface into SurfaceMap
     binder::Status insertGbpLocked(const sp<IGraphicBufferProducer>& gbp,
@@ -319,10 +298,6 @@ private:
 
     // Stream ID -> OutputConfiguration. Used for looking up Surface by stream/surface index
     KeyedVector<int32_t, hardware::camera2::params::OutputConfiguration> mConfiguredOutputs;
-
-    // Dynamic range profile id -> Supported dynamic profiles bitmap within an single capture
-    // request
-    std::unordered_map<int64_t, int64_t> mDynamicProfileMap;
 
     struct InputStreamConfiguration {
         bool configured;
@@ -355,19 +330,12 @@ private:
     // set of high resolution camera id (logical / physical)
     std::unordered_set<std::string> mHighResolutionSensors;
 
-    // Synchronize access to 'mCompositeStreamMap'
-    Mutex mCompositeLock;
     KeyedVector<sp<IBinder>, sp<CompositeStream>> mCompositeStreamMap;
 
     sp<CameraProviderManager> mProviderManager;
 
     // Override the camera characteristics for performance class primary cameras.
     bool mOverrideForPerfClass;
-
-    // The string representation of object passed into CaptureRequest.setTag.
-    std::string mUserTag;
-    // The last set video stabilization mode
-    int mVideoStabilizationMode = -1;
 };
 
 }; // namespace android

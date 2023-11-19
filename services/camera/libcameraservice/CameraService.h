@@ -29,8 +29,6 @@
 #include <binder/ActivityManager.h>
 #include <binder/AppOpsManager.h>
 #include <binder/BinderService.h>
-#include <binder/IServiceManager.h>
-#include <binder/IActivityManager.h>
 #include <binder/IAppOpsCallback.h>
 #include <binder/IUidObserver.h>
 #include <hardware/camera.h>
@@ -49,8 +47,6 @@
 #include "media/RingBuffer.h"
 #include "utils/AutoConditionLock.h"
 #include "utils/ClientManager.h"
-#include "utils/IPCTransport.h"
-#include "utils/CameraServiceProxyWrapper.h"
 
 #include <set>
 #include <string>
@@ -73,8 +69,7 @@ class CameraService :
     public BinderService<CameraService>,
     public virtual ::android::hardware::BnCameraService,
     public virtual IBinder::DeathRecipient,
-    public virtual CameraProviderManager::StatusListener,
-    public virtual IServiceManager::LocalRegistrationCallback
+    public virtual CameraProviderManager::StatusListener
 {
     friend class BinderService<CameraService>;
     friend class CameraOfflineSessionClient;
@@ -101,49 +96,32 @@ public:
     // Event log ID
     static const int SN_EVENT_LOG_ID = 0x534e4554;
 
-    // Register camera service
-    static void instantiate();
-
     // Implementation of BinderService<T>
     static char const* getServiceName() { return "media.camera"; }
 
-    // Implementation of IServiceManager::LocalRegistrationCallback
-    virtual void onServiceRegistration(const String16& name, const sp<IBinder>& binder) override;
-
-                        // Non-null arguments for cameraServiceProxyWrapper should be provided for
-                        // testing purposes only.
-                        CameraService(std::shared_ptr<CameraServiceProxyWrapper>
-                                cameraServiceProxyWrapper = nullptr);
+                        CameraService();
     virtual             ~CameraService();
 
     /////////////////////////////////////////////////////////////////////
     // HAL Callbacks - implements CameraProviderManager::StatusListener
 
     virtual void        onDeviceStatusChanged(const String8 &cameraId,
-            CameraDeviceStatus newHalStatus) override;
+            hardware::camera::common::V1_0::CameraDeviceStatus newHalStatus) override;
     virtual void        onDeviceStatusChanged(const String8 &cameraId,
             const String8 &physicalCameraId,
-            CameraDeviceStatus newHalStatus) override;
-    // This method may hold CameraProviderManager::mInterfaceMutex as a part
-    // of calling getSystemCameraKind() internally. Care should be taken not to
-    // directly / indirectly call this from callers who also hold
-    // mInterfaceMutex.
+            hardware::camera::common::V1_0::CameraDeviceStatus newHalStatus) override;
     virtual void        onTorchStatusChanged(const String8& cameraId,
-            TorchModeStatus newStatus) override;
-    // Does not hold CameraProviderManager::mInterfaceMutex.
-    virtual void        onTorchStatusChanged(const String8& cameraId,
-            TorchModeStatus newStatus,
-            SystemCameraKind kind) override;
+            hardware::camera::common::V1_0::TorchModeStatus newStatus) override;
     virtual void        onNewProviderRegistered() override;
 
     /////////////////////////////////////////////////////////////////////
     // ICameraService
     virtual binder::Status     getNumberOfCameras(int32_t type, int32_t* numCameras);
 
-    virtual binder::Status     getCameraInfo(int cameraId, bool overrideToPortrait,
-            hardware::CameraInfo* cameraInfo) override;
+    virtual binder::Status     getCameraInfo(int cameraId,
+            hardware::CameraInfo* cameraInfo);
     virtual binder::Status     getCameraCharacteristics(const String16& cameraId,
-            int targetSdkVersion, bool overrideToPortrait, CameraMetadata* cameraInfo) override;
+            int targetSdkVersion, CameraMetadata* cameraInfo);
     virtual binder::Status     getCameraVendorTagDescriptor(
             /*out*/
             hardware::camera2::params::VendorTagDescriptor* desc);
@@ -154,14 +132,13 @@ public:
     virtual binder::Status     connect(const sp<hardware::ICameraClient>& cameraClient,
             int32_t cameraId, const String16& clientPackageName,
             int32_t clientUid, int clientPid, int targetSdkVersion,
-            bool overrideToPortrait, bool forceSlowJpegMode,
             /*out*/
-            sp<hardware::ICamera>* device) override;
+            sp<hardware::ICamera>* device);
 
     virtual binder::Status     connectDevice(
             const sp<hardware::camera2::ICameraDeviceCallbacks>& cameraCb, const String16& cameraId,
             const String16& clientPackageName, const std::optional<String16>& clientFeatureId,
-            int32_t clientUid, int scoreOffset, int targetSdkVersion, bool overrideToPortrait,
+            int32_t clientUid, int scoreOffset, int targetSdkVersion,
             /*out*/
             sp<hardware::camera2::ICameraDeviceUser>* device);
 
@@ -186,12 +163,6 @@ public:
 
     virtual binder::Status    setTorchMode(const String16& cameraId, bool enabled,
             const sp<IBinder>& clientBinder);
-
-    virtual binder::Status    turnOnTorchWithStrengthLevel(const String16& cameraId,
-            int32_t torchStrength, const sp<IBinder>& clientBinder);
-
-    virtual binder::Status    getTorchStrengthLevel(const String16& cameraId,
-            int32_t* torchStrength);
 
     virtual binder::Status    notifySystemEvent(int32_t eventId,
             const std::vector<int32_t>& args);
@@ -218,9 +189,6 @@ public:
             /*out*/
             sp<hardware::camera2::ICameraInjectionSession>* cameraInjectionSession);
 
-    virtual binder::Status reportExtensionSessionStats(
-            const hardware::CameraExtensionSessionStats& stats, String16* sessionKey /*out*/);
-
     // Extra permissions checks
     virtual status_t    onTransact(uint32_t code, const Parcel& data,
                                    Parcel* reply, uint32_t flags);
@@ -236,7 +204,6 @@ public:
 
     // Monitored UIDs availability notification
     void                notifyMonitoredUids();
-    void                notifyMonitoredUids(const std::unordered_set<uid_t> &notifyUidSet);
 
     // Stores current open session device info in temp file.
     void cacheDump();
@@ -261,9 +228,8 @@ public:
 
     /////////////////////////////////////////////////////////////////////
     // CameraDeviceFactory functionality
-    std::pair<int, IPCTransport>    getDeviceVersion(const String8& cameraId,
-            bool overrideToPortrait, int* portraitRotation,
-            int* facing = nullptr, int* orientation = nullptr);
+    int                 getDeviceVersion(const String8& cameraId, int* facing = nullptr,
+            int* orientation = nullptr);
 
     /////////////////////////////////////////////////////////////////////
     // Methods to be used in CameraService class tests only
@@ -301,18 +267,10 @@ public:
             return mRemoteBinder;
         }
 
-        bool getOverrideToPortrait() const {
-            return mOverrideToPortrait;
-        }
-
         // Disallows dumping over binder interface
         virtual status_t dump(int fd, const Vector<String16>& args);
         // Internal dump method to be called by CameraService
         virtual status_t dumpClient(int fd, const Vector<String16>& args) = 0;
-
-        virtual status_t startWatchingTags(const String8 &tags, int outFd);
-        virtual status_t stopWatchingTags(int outFd);
-        virtual status_t dumpWatchedEventsToVector(std::vector<std::string> &out);
 
         // Return the package name for this client
         virtual String16 getPackageName() const;
@@ -356,52 +314,23 @@ public:
         // Override rotate-and-crop AUTO behavior
         virtual status_t setRotateAndCropOverride(uint8_t rotateAndCrop) = 0;
 
-        // Override autoframing AUTO behaviour
-        virtual status_t setAutoframingOverride(uint8_t autoframingValue) = 0;
-
         // Whether the client supports camera muting (black only output)
         virtual bool supportsCameraMute() = 0;
 
         // Set/reset camera mute
         virtual status_t setCameraMute(bool enabled) = 0;
 
-        // Set Camera service watchdog
-        virtual status_t setCameraServiceWatchdog(bool enabled) = 0;
-
-        // Set stream use case overrides
-        virtual void setStreamUseCaseOverrides(
-                const std::vector<int64_t>& useCaseOverrides) = 0;
-
-        // Clear stream use case overrides
-        virtual void clearStreamUseCaseOverrides() = 0;
-
-        // Whether the client supports camera zoom override
-        virtual bool supportsZoomOverride() = 0;
-
-        // Set/reset zoom override
-        virtual status_t setZoomOverride(int32_t zoomOverride) = 0;
-
-        // The injection camera session to replace the internal camera
-        // session.
-        virtual status_t injectCamera(const String8& injectedCamId,
-                sp<CameraProviderManager> manager) = 0;
-
-        // Stop the injection camera and restore to internal camera session.
-        virtual status_t stopInjection() = 0;
-
     protected:
         BasicClient(const sp<CameraService>& cameraService,
                 const sp<IBinder>& remoteCallback,
                 const String16& clientPackageName,
-                bool nativeClient,
                 const std::optional<String16>& clientFeatureId,
                 const String8& cameraIdStr,
                 int cameraFacing,
                 int sensorOrientation,
                 int clientPid,
                 uid_t clientUid,
-                int servicePid,
-                bool overrideToPortrait);
+                int servicePid);
 
         virtual ~BasicClient();
 
@@ -417,14 +346,12 @@ public:
         const int                       mCameraFacing;
         const int                       mOrientation;
         String16                        mClientPackageName;
-        bool                            mSystemNativeClient;
         std::optional<String16>         mClientFeatureId;
         pid_t                           mClientPid;
         const uid_t                     mClientUid;
         const pid_t                     mServicePid;
         bool                            mDisconnected;
         bool                            mUidIsTrusted;
-        bool                            mOverrideToPortrait;
 
         mutable Mutex                   mAudioRestrictionLock;
         int32_t                         mAudioRestriction;
@@ -506,7 +433,6 @@ public:
         Client(const sp<CameraService>& cameraService,
                 const sp<hardware::ICameraClient>& cameraClient,
                 const String16& clientPackageName,
-                bool systemNativeClient,
                 const std::optional<String16>& clientFeatureId,
                 const String8& cameraIdStr,
                 int api1CameraId,
@@ -514,8 +440,7 @@ public:
                 int sensorOrientation,
                 int clientPid,
                 uid_t clientUid,
-                int servicePid,
-                bool overrideToPortrait);
+                int servicePid);
         ~Client();
 
         // return our camera client
@@ -591,15 +516,14 @@ public:
          */
         static DescriptorPtr makeClientDescriptor(const String8& key, const sp<BasicClient>& value,
                 int32_t cost, const std::set<String8>& conflictingKeys, int32_t score,
-                int32_t ownerId, int32_t state, int oomScoreOffset, bool systemNativeClient);
+                int32_t ownerId, int32_t state, int oomScoreOffset);
 
         /**
          * Make a ClientDescriptor object wrapping the given BasicClient strong pointer with
          * values intialized from a prior ClientDescriptor.
          */
         static DescriptorPtr makeClientDescriptor(const sp<BasicClient>& value,
-                const CameraService::DescriptorPtr& partial, int oomScoreOffset,
-                bool systemNativeClient);
+                const CameraService::DescriptorPtr& partial, int oomScoreOffset);
 
     }; // class CameraClientManager
 
@@ -608,19 +532,7 @@ public:
 
 private:
 
-    // TODO: b/263304156 update this to make use of a death callback for more
-    // robust/fault tolerant logging
-    static const sp<IActivityManager>& getActivityManager() {
-        static const char* kActivityService = "activity";
-        static const auto activityManager = []() -> sp<IActivityManager> {
-            const sp<IServiceManager> sm(defaultServiceManager());
-            if (sm != nullptr) {
-                 return interface_cast<IActivityManager>(sm->checkService(String16(kActivityService)));
-            }
-            return nullptr;
-        }();
-        return activityManager;
-    }
+    typedef hardware::camera::common::V1_0::CameraDeviceStatus CameraDeviceStatus;
 
     /**
      * Typesafe version of device status, containing both the HAL-layer and the service interface-
@@ -651,7 +563,7 @@ private:
          * returned in the HAL's camera_info struct for each device.
          */
         CameraState(const String8& id, int cost, const std::set<String8>& conflicting,
-                SystemCameraKind deviceKind, const std::vector<std::string>& physicalCameras);
+                SystemCameraKind deviceKind);
         virtual ~CameraState();
 
         /**
@@ -709,22 +621,10 @@ private:
         SystemCameraKind getSystemCameraKind() const;
 
         /**
-         * Return whether this camera is a logical multi-camera and has a
-         * particular physical sub-camera.
-         */
-        bool containsPhysicalCamera(const std::string& physicalCameraId) const;
-
-        /**
          * Add/Remove the unavailable physical camera ID.
          */
         bool addUnavailablePhysicalId(const String8& physicalId);
         bool removeUnavailablePhysicalId(const String8& physicalId);
-
-        /**
-         * Set and get client package name.
-         */
-        void setClientPackage(const String8& clientPackage);
-        String8 getClientPackage() const;
 
         /**
          * Return the unavailable physical ids for this device.
@@ -738,19 +638,14 @@ private:
         const int mCost;
         std::set<String8> mConflicting;
         std::set<String8> mUnavailablePhysicalIds;
-        String8 mClientPackage;
         mutable Mutex mStatusLock;
         CameraParameters mShimParams;
         const SystemCameraKind mSystemCameraKind;
-        const std::vector<std::string> mPhysicalCameras; // Empty if not a logical multi-camera
     }; // class CameraState
 
     // Observer for UID lifecycle enforcing that UIDs in idle
     // state cannot use the camera to protect user privacy.
-    class UidPolicy :
-        public BnUidObserver,
-        public virtual IBinder::DeathRecipient,
-        public virtual IServiceManager::LocalRegistrationCallback {
+    class UidPolicy : public BnUidObserver, public virtual IBinder::DeathRecipient {
     public:
         explicit UidPolicy(sp<CameraService> service)
                 : mRegistered(false), mService(service) {}
@@ -761,54 +656,39 @@ private:
         bool isUidActive(uid_t uid, String16 callingPackage);
         int32_t getProcState(uid_t uid);
 
-        // IUidObserver
-        void onUidGone(uid_t uid, bool disabled) override;
-        void onUidActive(uid_t uid) override;
-        void onUidIdle(uid_t uid, bool disabled) override;
+        void onUidGone(uid_t uid, bool disabled);
+        void onUidActive(uid_t uid);
+        void onUidIdle(uid_t uid, bool disabled);
         void onUidStateChanged(uid_t uid, int32_t procState, int64_t procStateSeq,
-                int32_t capability) override;
-        void onUidProcAdjChanged(uid_t uid, int adj) override;
+                int32_t capability);
 
         void addOverrideUid(uid_t uid, String16 callingPackage, bool active);
         void removeOverrideUid(uid_t uid, String16 callingPackage);
 
-        void registerMonitorUid(uid_t uid, bool openCamera);
-        void unregisterMonitorUid(uid_t uid, bool closeCamera);
+        void registerMonitorUid(uid_t uid);
+        void unregisterMonitorUid(uid_t uid);
 
-        // Implementation of IServiceManager::LocalRegistrationCallback
-        virtual void onServiceRegistration(const String16& name,
-                        const sp<IBinder>& binder) override;
         // IBinder::DeathRecipient implementation
         virtual void binderDied(const wp<IBinder> &who);
     private:
         bool isUidActiveLocked(uid_t uid, String16 callingPackage);
         int32_t getProcStateLocked(uid_t uid);
         void updateOverrideUid(uid_t uid, String16 callingPackage, bool active, bool insert);
-        void registerWithActivityManager();
-
-        struct MonitoredUid {
-            int32_t procState;
-            int32_t procAdj;
-            bool hasCamera;
-            size_t refCount;
-        };
 
         Mutex mUidLock;
         bool mRegistered;
         ActivityManager mAm;
         wp<CameraService> mService;
         std::unordered_set<uid_t> mActiveUids;
-        // Monitored uid map
-        std::unordered_map<uid_t, MonitoredUid> mMonitoredUids;
+        // Monitored uid map to cached procState and refCount pair
+        std::unordered_map<uid_t, std::pair<int32_t, size_t>> mMonitoredUids;
         std::unordered_map<uid_t, bool> mOverrideUids;
-        sp<IBinder> mObserverToken;
     }; // class UidPolicy
 
     // If sensor privacy is enabled then all apps, including those that are active, should be
     // prevented from accessing the camera.
     class SensorPrivacyPolicy : public hardware::BnSensorPrivacyListener,
-            public virtual IBinder::DeathRecipient,
-            public virtual IServiceManager::LocalRegistrationCallback {
+            public virtual IBinder::DeathRecipient {
         public:
             explicit SensorPrivacyPolicy(wp<CameraService> service)
                     : mService(service), mSensorPrivacyEnabled(false), mRegistered(false) {}
@@ -817,14 +697,10 @@ private:
             void unregisterSelf();
 
             bool isSensorPrivacyEnabled();
-            bool isCameraPrivacyEnabled();
+            bool isCameraPrivacyEnabled(userid_t userId);
 
-            binder::Status onSensorPrivacyChanged(int toggleType, int sensor,
-                                                  bool enabled);
+            binder::Status onSensorPrivacyChanged(bool enabled);
 
-            // Implementation of IServiceManager::LocalRegistrationCallback
-            virtual void onServiceRegistration(const String16& name,
-                                               const sp<IBinder>& binder) override;
             // IBinder::DeathRecipient implementation
             virtual void binderDied(const wp<IBinder> &who);
 
@@ -836,14 +712,11 @@ private:
             bool mRegistered;
 
             bool hasCameraPrivacyFeature();
-            void registerWithSensorPrivacyManager();
     };
 
     sp<UidPolicy> mUidPolicy;
 
     sp<SensorPrivacyPolicy> mSensorPrivacyPolicy;
-
-    std::shared_ptr<CameraServiceProxyWrapper> mCameraServiceProxyWrapper;
 
     // Delay-load the Camera HAL module
     virtual void onFirstRef();
@@ -872,7 +745,7 @@ private:
     // Only call with with mServiceLock held.
     status_t handleEvictionsLocked(const String8& cameraId, int clientPid,
         apiLevel effectiveApiLevel, const sp<IBinder>& remoteCallback, const String8& packageName,
-        int scoreOffset, bool systemNativeClient,
+        int scoreOffset,
         /*out*/
         sp<BasicClient>* client,
         std::shared_ptr<resource_policy::ClientDescriptor<String8, sp<BasicClient>>>* partial);
@@ -901,22 +774,12 @@ private:
     // sorted in alpha-numeric order.
     void filterAPI1SystemCameraLocked(const std::vector<std::string> &normalDeviceIds);
 
-    // In some cases the calling code has no access to the package it runs under.
-    // For example, NDK camera API.
-    // In this case we will get the packages for the calling UID and pick the first one
-    // for attributing the app op. This will work correctly for runtime permissions
-    // as for legacy apps we will toggle the app op for all packages in the UID.
-    // The caveat is that the operation may be attributed to the wrong package and
-    // stats based on app ops may be slightly off.
-    String16 getPackageNameFromUid(int clientUid);
-
     // Single implementation shared between the various connect calls
     template<class CALLBACK, class CLIENT>
     binder::Status connectHelper(const sp<CALLBACK>& cameraCb, const String8& cameraId,
-            int api1CameraId, const String16& clientPackageNameMaybe, bool systemNativeClient,
+            int api1CameraId, const String16& clientPackageName,
             const std::optional<String16>& clientFeatureId, int clientUid, int clientPid,
             apiLevel effectiveApiLevel, bool shimUpdateOnly, int scoreOffset, int targetSdkVersion,
-            bool overrideToPortrait, bool forceSlowJpegMode,
             /*out*/sp<CLIENT>& device);
 
     // Lock guarding camera service state
@@ -946,14 +809,6 @@ private:
     // Circular buffer for storing event logging for dumps
     RingBuffer<String8> mEventLog;
     Mutex mLogLock;
-
-    // set of client package names to watch. if this set contains 'all', then all clients will
-    // be watched. Access should be guarded by mLogLock
-    std::set<String16> mWatchedClientPackages;
-    // cache of last monitored tags dump immediately before the client disconnects. If a client
-    // re-connects, its entry is not updated until it disconnects again. Access should be guarded
-    // by mLogLock
-    std::map<String16, std::string> mWatchedClientsDumpCache;
 
     // The last monitored tags set by client
     String8 mMonitorTags;
@@ -991,7 +846,7 @@ private:
      * This method must be called with mServiceLock held.
      */
     void finishConnectLocked(const sp<BasicClient>& client, const DescriptorPtr& desc,
-            int oomScoreOffset, bool systemNativeClient);
+            int oomScoreOffset);
 
     /**
      * Returns the underlying camera Id string mapped to a camera id int
@@ -1087,8 +942,6 @@ private:
      */
     void dumpEventLog(int fd);
 
-    void cacheClientTagDumpIfNeeded(const char *cameraId, BasicClient *client);
-
     /**
      * This method will acquire mServiceLock
      */
@@ -1141,29 +994,6 @@ private:
                 return IInterface::asBinder(mListener)->linkToDeath(this);
             }
 
-            template<typename... args_t>
-            void handleBinderStatus(const binder::Status &ret, const char *logOnError,
-                    args_t... args) {
-                if (!ret.isOk() &&
-                        (ret.exceptionCode() != binder::Status::Exception::EX_TRANSACTION_FAILED
-                        || !mLastTransactFailed)) {
-                    ALOGE(logOnError, args...);
-                }
-
-                // If the transaction failed, the process may have died (or other things, see
-                // b/28321379). Mute consecutive errors from this listener to avoid log spam.
-                if (ret.exceptionCode() == binder::Status::Exception::EX_TRANSACTION_FAILED) {
-                    if (!mLastTransactFailed) {
-                        ALOGE("%s: Muting similar errors from listener %d:%d", __FUNCTION__,
-                                mListenerUid, mListenerPid);
-                    }
-                    mLastTransactFailed = true;
-                } else {
-                    // Reset mLastTransactFailed when binder becomes healthy again.
-                    mLastTransactFailed = false;
-                }
-            }
-
             virtual void binderDied(const wp<IBinder> &/*who*/) {
                 auto parent = mParent.promote();
                 if (parent.get() != nullptr) {
@@ -1184,9 +1014,6 @@ private:
             int mListenerPid = -1;
             bool mIsVendorListener = false;
             bool mOpenCloseCallbackAllowed = false;
-
-            // Flag for preventing log spam when binder becomes unhealthy
-            bool mLastTransactFailed = false;
     };
 
     // Guarded by mStatusListenerMutex
@@ -1225,7 +1052,7 @@ private:
     // guard mTorchUidMap
     Mutex                mTorchUidMapMutex;
     // camera id -> torch status
-    KeyedVector<String8, TorchModeStatus>
+    KeyedVector<String8, hardware::camera::common::V1_0::TorchModeStatus>
             mTorchStatusMap;
     // camera id -> torch client binder
     // only store the last client that turns on each camera's torch mode
@@ -1239,16 +1066,16 @@ private:
     // handle torch mode status change and invoke callbacks. mTorchStatusMutex
     // should be locked.
     void onTorchStatusChangedLocked(const String8& cameraId,
-            TorchModeStatus newStatus,
+            hardware::camera::common::V1_0::TorchModeStatus newStatus,
             SystemCameraKind systemCameraKind);
 
     // get a camera's torch status. mTorchStatusMutex should be locked.
     status_t getTorchStatusLocked(const String8 &cameraId,
-             TorchModeStatus *status) const;
+             hardware::camera::common::V1_0::TorchModeStatus *status) const;
 
     // set a camera's torch status. mTorchStatusMutex should be locked.
     status_t setTorchStatusLocked(const String8 &cameraId,
-            TorchModeStatus status);
+            hardware::camera::common::V1_0::TorchModeStatus status);
 
     // notify physical camera status when the physical camera is public.
     // Expects mStatusListenerLock to be locked.
@@ -1298,12 +1125,6 @@ private:
     // Get the rotate-and-crop AUTO override behavior
     status_t handleGetRotateAndCrop(int out);
 
-    // Set the autoframing AUTO override behaviour.
-    status_t handleSetAutoframing(const Vector<String16>& args);
-
-    // Get the autoframing AUTO override behaviour
-    status_t handleGetAutoframing(int out);
-
     // Set the mask for image dump to disk
     status_t handleSetImageDumpMask(const Vector<String16>& args);
 
@@ -1313,54 +1134,8 @@ private:
     // Set the camera mute state
     status_t handleSetCameraMute(const Vector<String16>& args);
 
-    // Set the stream use case overrides
-    status_t handleSetStreamUseCaseOverrides(const Vector<String16>& args);
-
-    // Clear the stream use case overrides
-    void handleClearStreamUseCaseOverrides();
-
-    // Set or clear the zoom override flag
-    status_t handleSetZoomOverride(const Vector<String16>& args);
-
-    // Handle 'watch' command as passed through 'cmd'
-    status_t handleWatchCommand(const Vector<String16> &args, int inFd, int outFd);
-
-    // Set the camera service watchdog
-    status_t handleSetCameraServiceWatchdog(const Vector<String16>& args);
-
-    // Enable tag monitoring of the given tags in provided clients
-    status_t startWatchingTags(const Vector<String16> &args, int outFd);
-
-    // Disable tag monitoring
-    status_t stopWatchingTags(int outFd);
-
-    // Clears mWatchedClientsDumpCache
-    status_t clearCachedMonitoredTagDumps(int outFd);
-
-    // Print events of monitored tags in all cached and attached clients
-    status_t printWatchedTags(int outFd);
-
-    // Print events of monitored tags in all attached clients as they are captured. New events are
-    // fetched every `refreshMillis` ms
-    // NOTE: This function does not terminate until user passes '\n' to inFd.
-    status_t printWatchedTagsUntilInterrupt(const Vector<String16> &args, int inFd, int outFd);
-
-    // Parses comma separated clients list and adds them to mWatchedClientPackages.
-    // Does not acquire mLogLock before modifying mWatchedClientPackages. It is the caller's
-    // responsibility to acquire mLogLock before calling this function.
-    void parseClientsToWatchLocked(String8 clients);
-
     // Prints the shell command help
     status_t printHelp(int out);
-
-    // Returns true if client should monitor tags based on the contents of mWatchedClientPackages.
-    // Acquires mLogLock before querying mWatchedClientPackages.
-    bool isClientWatched(const BasicClient *client);
-
-    // Returns true if client should monitor tags based on the contents of mWatchedClientPackages.
-    // Does not acquire mLogLock before querying mWatchedClientPackages. It is the caller's
-    // responsibility to acquire mLogLock before calling this functions.
-    bool isClientWatchedLocked(const BasicClient *client);
 
     /**
      * Get the current system time as a formatted string.
@@ -1369,35 +1144,28 @@ private:
 
     static binder::Status makeClient(const sp<CameraService>& cameraService,
             const sp<IInterface>& cameraCb, const String16& packageName,
-            bool systemNativeClient, const std::optional<String16>& featureId,
-            const String8& cameraId, int api1CameraId, int facing, int sensorOrientation,
-            int clientPid, uid_t clientUid, int servicePid,
-            std::pair<int, IPCTransport> deviceVersionAndIPCTransport, apiLevel effectiveApiLevel,
-            bool overrideForPerfClass, bool overrideToPortrait, bool forceSlowJpegMode,
+            const std::optional<String16>& featureId, const String8& cameraId, int api1CameraId,
+            int facing, int sensorOrientation, int clientPid, uid_t clientUid, int servicePid,
+            int deviceVersion, apiLevel effectiveApiLevel, bool overrideForPerfClass,
             /*out*/sp<BasicClient>* client);
 
     status_t checkCameraAccess(const String16& opPackageName);
 
     static String8 toString(std::set<userid_t> intSet);
-    static int32_t mapToInterface(TorchModeStatus status);
-    static StatusInternal mapToInternal(CameraDeviceStatus status);
+    static int32_t mapToInterface(hardware::camera::common::V1_0::TorchModeStatus status);
+    static StatusInternal mapToInternal(hardware::camera::common::V1_0::CameraDeviceStatus status);
     static int32_t mapToInterface(StatusInternal status);
 
 
     void broadcastTorchModeStatus(const String8& cameraId,
-            TorchModeStatus status, SystemCameraKind systemCameraKind);
-
-    void broadcastTorchStrengthLevel(const String8& cameraId, int32_t newTorchStrengthLevel);
+            hardware::camera::common::V1_0::TorchModeStatus status,
+            SystemCameraKind systemCameraKind);
 
     void disconnectClient(const String8& id, sp<BasicClient> clientToDisconnect);
 
     // Regular online and offline devices must not be in conflict at camera service layer.
     // Use separate keys for offline devices.
     static const String8 kOfflineDevice;
-
-    // Sentinel value to be stored in `mWatchedClientsPackages` to indicate that all clients should
-    // be watched.
-    static const String16 kWatchAllClientsFlag;
 
     // TODO: right now each BasicClient holds one AppOpsManager instance.
     // We can refactor the code so all of clients share this instance
@@ -1409,23 +1177,11 @@ private:
     // Current override cmd rotate-and-crop mode; AUTO means no override
     uint8_t mOverrideRotateAndCropMode = ANDROID_SCALER_ROTATE_AND_CROP_AUTO;
 
-    // Current autoframing mode
-    uint8_t mOverrideAutoframingMode = ANDROID_CONTROL_AUTOFRAMING_AUTO;
-
     // Current image dump mask
     uint8_t mImageDumpMask = 0;
 
     // Current camera mute mode
     bool mOverrideCameraMuteMode = false;
-
-    // Camera Service watchdog flag
-    bool mCameraServiceWatchdogEnabled = true;
-
-    // Current stream use case overrides
-    std::vector<int64_t> mStreamUseCaseOverrides;
-
-    // Current zoom override value
-    int32_t mZoomOverrideValue = -1;
 
     /**
      * A listener class that implements the IBinder::DeathRecipient interface
@@ -1438,7 +1194,7 @@ private:
 
             void addListener(const sp<hardware::camera2::ICameraInjectionCallback>& callback);
             void removeListener();
-            void notifyInjectionError(String8 injectedCamId, status_t err);
+            void notifyInjectionError(int errorCode);
 
             // IBinder::DeathRecipient implementation
             virtual void binderDied(const wp<IBinder>& who);
@@ -1465,25 +1221,7 @@ private:
             wp<CameraService> mParent;
     };
 
-    // When injecting the camera, it will check whether the injecting camera status is unavailable.
-    // If it is, the disconnect function will be called to to prevent camera access on the device.
-    status_t checkIfInjectionCameraIsPresent(const String8& externalCamId,
-            sp<BasicClient> clientSp);
-
-    void clearInjectionParameters();
-
-    // This is the existing camera id being replaced.
-    String8 mInjectionInternalCamId;
-    // This is the external camera Id replacing the internalId.
-    String8 mInjectionExternalCamId;
-    bool mInjectionInitPending = false;
-    // Guard mInjectionInternalCamId and mInjectionInitPending.
-    Mutex mInjectionParametersLock;
-
-    // Track the folded/unfoled device state. 0 == UNFOLDED, 4 == FOLDED
-    int64_t mDeviceState;
-
-    void updateTorchUidMapLocked(const String16& cameraId, int uid);
+    void stopInjectionImpl();
 };
 
 } // namespace android

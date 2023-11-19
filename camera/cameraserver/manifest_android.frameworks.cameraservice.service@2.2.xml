@@ -1,17 +1,8 @@
 <manifest version="1.0" type="framework">
-    <hal format="hidl" max-level="7">
+    <hal>
         <name>android.frameworks.cameraservice.service</name>
         <transport>hwbinder</transport>
         <version>2.2</version>
-        <interface>
-            <name>ICameraService</name>
-            <instance>default</instance>
-        </interface>
-    </hal>
-
-    <hal format="aidl">
-        <name>android.frameworks.cameraservice.service</name>
-        <version>1</version>
         <interface>
             <name>ICameraService</name>
             <instance>default</instance>

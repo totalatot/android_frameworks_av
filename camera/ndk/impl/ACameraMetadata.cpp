@@ -182,7 +182,7 @@ ACameraMetadata::filterDurations(uint32_t tag) {
         int64_t format = entry.data.i64[i + STREAM_FORMAT_OFFSET];
         int64_t width = entry.data.i64[i + STREAM_WIDTH_OFFSET];
         int64_t height = entry.data.i64[i + STREAM_HEIGHT_OFFSET];
-        int64_t duration = entry.data.i64[i + STREAM_DURATION_OFFSET];
+        int64_t duration = entry.data.i32[i + STREAM_DURATION_OFFSET];
 
         // Leave the unfiltered format in so apps depending on previous wrong
         // filter behavior continue to work
@@ -536,8 +536,6 @@ ACameraMetadata::isCaptureRequestTag(const uint32_t tag) {
         case ACAMERA_CONTROL_ENABLE_ZSL:
         case ACAMERA_CONTROL_EXTENDED_SCENE_MODE:
         case ACAMERA_CONTROL_ZOOM_RATIO:
-        case ACAMERA_CONTROL_SETTINGS_OVERRIDE:
-        case ACAMERA_CONTROL_AUTOFRAMING:
         case ACAMERA_EDGE_MODE:
         case ACAMERA_FLASH_MODE:
         case ACAMERA_HOT_PIXEL_MODE:
@@ -586,7 +584,6 @@ std::unordered_set<uint32_t> ACameraMetadata::sSystemTags ({
     ANDROID_CONTROL_SCENE_MODE_OVERRIDES,
     ANDROID_CONTROL_AE_PRECAPTURE_ID,
     ANDROID_CONTROL_AF_TRIGGER_ID,
-    ANDROID_CONTROL_SETTINGS_OVERRIDING_FRAME_NUMBER,
     ANDROID_DEMOSAIC_MODE,
     ANDROID_EDGE_STRENGTH,
     ANDROID_FLASH_FIRING_POWER,

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <hidl/Utils.h>
+#include <hidl/Convert.h>
 #include <gui/bufferqueue/1.0/H2BGraphicBufferProducer.h>
 #include <cutils/native_handle.h>
 #include <mediautils/AImageReaderUtils.h>

@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#include <android-base/properties.h>
+#include <hidl/Convert.h>
 
+#include <hidl/HidlCameraService.h>
+
+#include <hidl/HidlCameraDeviceUser.h>
 #include <hidl/AidlCameraDeviceCallbacks.h>
 #include <hidl/AidlCameraServiceListener.h>
-#include <hidl/HidlCameraService.h>
-#include <hidl/HidlCameraDeviceUser.h>
-#include <hidl/Utils.h>
-#include <aidl/AidlUtils.h>
 
 #include <hidl/HidlTransportSupport.h>
 
@@ -37,7 +36,6 @@ using hardware::hidl_vec;
 using hardware::cameraservice::utils::conversion::convertToHidl;
 using hardware::cameraservice::utils::conversion::B2HStatus;
 using hardware::Void;
-using hardware::cameraservice::utils::conversion::aidl::filterVndkKeys;
 
 using device::V2_0::implementation::H2BCameraDeviceCallbacks;
 using device::V2_1::implementation::HidlCameraDeviceUser;
@@ -55,10 +53,6 @@ sp<HidlCameraService> HidlCameraService::getInstance(android::CameraService *cs)
     return gHidlCameraService;
 }
 
-HidlCameraService::HidlCameraService(android::CameraService *cs) : mAidlICameraService(cs) {
-    mVndkVersion = base::GetIntProperty("ro.vndk.version", __ANDROID_API_FUTURE__);
-};
-
 Return<void>
 HidlCameraService::getCameraCharacteristics(const hidl_string& cameraId,
                                             getCameraCharacteristics_cb _hidl_cb) {
@@ -66,8 +60,7 @@ HidlCameraService::getCameraCharacteristics(const hidl_string& cameraId,
     HStatus status = HStatus::NO_ERROR;
     binder::Status serviceRet =
         mAidlICameraService->getCameraCharacteristics(String16(cameraId.c_str()),
-                /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*overrideToPortrait*/false,
-                &cameraMetadata);
+                /*targetSdkVersion*/__ANDROID_API_FUTURE__, &cameraMetadata);
     HCameraMetadata hidlMetadata;
     if (!serviceRet.isOk()) {
         switch(serviceRet.serviceSpecificErrorCode()) {
@@ -82,11 +75,6 @@ HidlCameraService::getCameraCharacteristics(const hidl_string& cameraId,
                 status = B2HStatus(serviceRet);
           }
         _hidl_cb(status, hidlMetadata);
-        return Void();
-    }
-    if (filterVndkKeys(mVndkVersion, cameraMetadata) != OK) {
-        ALOGE("%s: Unable to filter vndk metadata keys for version %d", __FUNCTION__, mVndkVersion);
-        _hidl_cb(HStatus::UNKNOWN_ERROR, hidlMetadata);
         return Void();
     }
     const camera_metadata_t *rawMetadata = cameraMetadata.getAndLock();
@@ -109,7 +97,7 @@ Return<void> HidlCameraService::connectDevice(const sp<HCameraDeviceCallback>& h
     // Create a hardware::camera2::ICameraDeviceCallback object which internally
     // calls callback functions passed through hCallback.
     sp<H2BCameraDeviceCallbacks> hybridCallbacks = new H2BCameraDeviceCallbacks(hCallback);
-    if (!hybridCallbacks->initializeLooper(mVndkVersion)) {
+    if (!hybridCallbacks->initializeLooper()) {
         ALOGE("Unable to handle callbacks on device, cannot connect");
         _hidl_cb(HStatus::UNKNOWN_ERROR, nullptr);
         return Void();
@@ -118,8 +106,7 @@ Return<void> HidlCameraService::connectDevice(const sp<HCameraDeviceCallback>& h
     binder::Status serviceRet = mAidlICameraService->connectDevice(
             callbacks, String16(cameraId.c_str()), String16(""), {},
             hardware::ICameraService::USE_CALLING_UID, 0/*oomScoreOffset*/,
-            /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*overrideToPortrait*/false,
-            /*out*/&deviceRemote);
+            /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*out*/&deviceRemote);
     HStatus status = HStatus::NO_ERROR;
     if (!serviceRet.isOk()) {
         ALOGE("%s: Unable to connect to camera device", __FUNCTION__);
@@ -292,9 +279,6 @@ Return<void> HidlCameraService::getCameraVendorTagSections(getCameraVendorTagSec
         size_t numSections = sectionNames->size();
         std::vector<std::vector<HVendorTag>> tagsBySection(numSections);
         int tagCount = desc->getTagCount();
-        if (tagCount <= 0) {
-            continue;
-        }
         std::vector<uint32_t> tags(tagCount);
         desc->getTagArray(tags.data());
         for (int i = 0; i < tagCount; i++) {

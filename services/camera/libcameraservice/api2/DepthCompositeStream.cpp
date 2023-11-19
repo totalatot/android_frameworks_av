@@ -18,9 +18,6 @@
 #define ATRACE_TAG ATRACE_TAG_CAMERA
 //#define LOG_NDEBUG 0
 
-#include <aidl/android/hardware/camera/device/CameraBlob.h>
-#include <aidl/android/hardware/camera/device/CameraBlobId.h>
-
 #include "api1/client2/JpegProcessor.h"
 #include "common/CameraProviderManager.h"
 #include "utils/SessionConfigurationUtils.h"
@@ -32,9 +29,6 @@
 
 namespace android {
 namespace camera3 {
-
-using aidl::android::hardware::camera::device::CameraBlob;
-using aidl::android::hardware::camera::device::CameraBlobId;
 
 DepthCompositeStream::DepthCompositeStream(sp<CameraDeviceBase> device,
         wp<hardware::camera2::ICameraDeviceCallbacks> cb) :
@@ -98,7 +92,7 @@ DepthCompositeStream::DepthCompositeStream(sp<CameraDeviceBase> device,
         }
 
         getSupportedDepthSizes(staticInfo, /*maxResolution*/false, &mSupportedDepthSizes);
-        if (SessionConfigurationUtils::supportsUltraHighResolutionCapture(staticInfo)) {
+        if (SessionConfigurationUtils::isUltraHighResolutionSensor(staticInfo)) {
             getSupportedDepthSizes(staticInfo, true, &mSupportedDepthSizesMaximumResolution);
         }
     }
@@ -303,8 +297,7 @@ status_t DepthCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
     }
 
     sp<GraphicBuffer> gb = GraphicBuffer::from(anb);
-    GraphicBufferLocker gbLocker(gb);
-    res = gbLocker.lockAsync(&dstBuffer, fenceFd);
+    res = gb->lockAsync(GRALLOC_USAGE_SW_WRITE_OFTEN, &dstBuffer, fenceFd);
     if (res != OK) {
         ALOGE("%s: Error trying to lock output buffer fence: %s (%d)", __FUNCTION__,
                 strerror(-res), res);
@@ -373,7 +366,7 @@ status_t DepthCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
         return res;
     }
 
-    size_t finalJpegSize = actualJpegSize + sizeof(CameraBlob);
+    size_t finalJpegSize = actualJpegSize + sizeof(struct camera_jpeg_blob);
     if (finalJpegSize > finalJpegBufferSize) {
         ALOGE("%s: Final jpeg buffer not large enough for the jpeg blob header", __FUNCTION__);
         outputANW->cancelBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
@@ -389,10 +382,10 @@ status_t DepthCompositeStream::processInputFrame(nsecs_t ts, const InputFrame &i
 
     ALOGV("%s: Final jpeg size: %zu", __func__, finalJpegSize);
     uint8_t* header = static_cast<uint8_t *> (dstBuffer) +
-        (gb->getWidth() - sizeof(CameraBlob));
-    CameraBlob *blob = reinterpret_cast<CameraBlob*> (header);
-    blob->blobId = CameraBlobId::JPEG;
-    blob->blobSizeBytes = actualJpegSize;
+        (gb->getWidth() - sizeof(struct camera_jpeg_blob));
+    struct camera_jpeg_blob *blob = reinterpret_cast<struct camera_jpeg_blob*> (header);
+    blob->jpeg_blob_id = CAMERA_JPEG_BLOB_ID;
+    blob->jpeg_size = actualJpegSize;
     outputANW->queueBuffer(mOutputSurface.get(), anb, /*fence*/ -1);
 
     return res;
@@ -581,8 +574,7 @@ status_t DepthCompositeStream::createInternalStreams(const std::vector<sp<Surfac
         camera_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
         const std::unordered_set<int32_t> &sensorPixelModesUsed,
         std::vector<int> *surfaceIds,
-        int /*streamSetId*/, bool /*isShared*/, int32_t /*colorSpace*/,
-        int64_t /*dynamicProfile*/, int64_t /*streamUseCase*/, bool useReadoutTimestamp) {
+        int /*streamSetId*/, bool /*isShared*/) {
     if (mSupportedDepthSizes.empty()) {
         ALOGE("%s: This camera device doesn't support any depth map streams!", __FUNCTION__);
         return INVALID_OPERATION;
@@ -613,14 +605,7 @@ status_t DepthCompositeStream::createInternalStreams(const std::vector<sp<Surfac
     mBlobSurface = new Surface(producer);
 
     ret = device->createStream(mBlobSurface, width, height, format, kJpegDataSpace, rotation,
-            id, physicalCameraId, sensorPixelModesUsed, surfaceIds,
-            camera3::CAMERA3_STREAM_SET_ID_INVALID, /*isShared*/false, /*isMultiResolution*/false,
-            /*consumerUsage*/0, ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
-            OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
-            OutputConfiguration::MIRROR_MODE_AUTO,
-            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED,
-            useReadoutTimestamp);
+            id, physicalCameraId, sensorPixelModesUsed, surfaceIds);
     if (ret == OK) {
         mBlobStreamId = *id;
         mBlobSurfaceId = (*surfaceIds)[0];
@@ -637,14 +622,7 @@ status_t DepthCompositeStream::createInternalStreams(const std::vector<sp<Surfac
     std::vector<int> depthSurfaceId;
     ret = device->createStream(mDepthSurface, depthWidth, depthHeight, kDepthMapPixelFormat,
             kDepthMapDataSpace, rotation, &mDepthStreamId, physicalCameraId, sensorPixelModesUsed,
-            &depthSurfaceId, camera3::CAMERA3_STREAM_SET_ID_INVALID, /*isShared*/false,
-            /*isMultiResolution*/false, /*consumerUsage*/0,
-            ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
-            OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
-            OutputConfiguration::MIRROR_MODE_AUTO,
-            ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED,
-            useReadoutTimestamp);
+            &depthSurfaceId);
     if (ret == OK) {
         mDepthSurfaceId = depthSurfaceId[0];
     } else {
@@ -901,7 +879,7 @@ status_t DepthCompositeStream::getCompositeStreamInfo(const OutputStreamInfo &st
         return BAD_VALUE;
     }
 
-    if (SessionConfigurationUtils::supportsUltraHighResolutionCapture(ch)) {
+    if (SessionConfigurationUtils::isUltraHighResolutionSensor(ch)) {
         getSupportedDepthSizes(ch, /*maxResolution*/true, &depthSizesMaximumResolution);
         if (depthSizesMaximumResolution.empty()) {
             ALOGE("%s: No depth stream configurations for maximum resolution present",

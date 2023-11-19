@@ -34,7 +34,7 @@ class Camera3OutputStreamInterface : public virtual Camera3StreamInterface {
      * Set the transform on the output stream; one of the
      * HAL_TRANSFORM_* / NATIVE_WINDOW_TRANSFORM_* constants.
      */
-    virtual status_t setTransform(int transform, bool mayChangeMirror) = 0;
+    virtual status_t setTransform(int transform) = 0;
 
     /**
      * Return if this output stream is for video encoding.
@@ -108,20 +108,6 @@ class Camera3OutputStreamInterface : public virtual Camera3StreamInterface {
      * instead.
      */
     virtual status_t setBatchSize(size_t batchSize = 1) = 0;
-
-    /**
-     * Notify the output stream that the minimum frame duration has changed, or
-     * frame rate has switched between variable and fixed.
-     *
-     * The minimum frame duration is calculated based on the upper bound of
-     * AE_TARGET_FPS_RANGE in the capture request.
-     */
-    virtual void onMinDurationChanged(nsecs_t duration, bool fixedFps) = 0;
-
-    /**
-     * Modify the stream use case for this output.
-     */
-    virtual void setStreamUseCase(int64_t streamUseCase) = 0;
 };
 
 // Helper class to organize a synchronized mapping of stream IDs to stream instances

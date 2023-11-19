@@ -23,11 +23,7 @@ using namespace android;
 
 ACameraCaptureSession::~ACameraCaptureSession() {
     ALOGV("~ACameraCaptureSession: %p notify device end of life", this);
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev != nullptr && !dev->isClosed()) {
         dev->lockDeviceForSessionOps();
         {
@@ -54,11 +50,7 @@ ACameraCaptureSession::closeByApp() {
         mClosedByApp = true;
     }
 
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev != nullptr) {
         dev->lockDeviceForSessionOps();
     }
@@ -83,11 +75,7 @@ ACameraCaptureSession::closeByApp() {
 
 camera_status_t
 ACameraCaptureSession::stopRepeating() {
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev == nullptr) {
         ALOGE("Error: Device associated with session %p has been closed!", this);
         return ACAMERA_ERROR_SESSION_CLOSED;
@@ -105,11 +93,7 @@ ACameraCaptureSession::stopRepeating() {
 
 camera_status_t
 ACameraCaptureSession::abortCaptures() {
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev == nullptr) {
         ALOGE("Error: Device associated with session %p has been closed!", this);
         return ACAMERA_ERROR_SESSION_CLOSED;
@@ -126,11 +110,7 @@ ACameraCaptureSession::abortCaptures() {
 }
 
 camera_status_t ACameraCaptureSession::updateOutputConfiguration(ACaptureSessionOutput *output) {
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev == nullptr) {
         ALOGE("Error: Device associated with session %p has been closed!", this);
         return ACAMERA_ERROR_SESSION_CLOSED;
@@ -146,35 +126,10 @@ camera_status_t ACameraCaptureSession::updateOutputConfiguration(ACaptureSession
     return ret;
 }
 
-camera_status_t ACameraCaptureSession::prepare(ACameraWindowType* window) {
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
-    sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
-    if (dev == nullptr) {
-        ALOGE("Error: Device associated with session %p has been closed!", this);
-        return ACAMERA_ERROR_SESSION_CLOSED;
-    }
-
-    camera_status_t ret;
-    dev->lockDeviceForSessionOps();
-    {
-        Mutex::Autolock _l(mSessionLock);
-        ret = dev->prepareLocked(window);
-    }
-    dev->unlockDevice();
-    return ret;
-}
-
 ACameraDevice*
 ACameraCaptureSession::getDevice() {
     Mutex::Autolock _l(mSessionLock);
-#ifdef __ANDROID_VNDK__
-    std::shared_ptr<acam::CameraDevice> dev = getDevicePtr();
-#else
     sp<acam::CameraDevice> dev = getDeviceSp();
-#endif
     if (dev == nullptr) {
         ALOGE("Error: Device associated with session %p has been closed!", this);
         return nullptr;
@@ -188,17 +143,6 @@ ACameraCaptureSession::closeByDevice() {
     mIsClosed = true;
 }
 
-#ifdef __ANDROID_VNDK__
-std::shared_ptr<acam::CameraDevice>
-ACameraCaptureSession::getDevicePtr() {
-    std::shared_ptr<acam::CameraDevice> device = mDevice.lock();
-    if (device == nullptr || device->isClosed()) {
-        ALOGW("Device is closed but session %d is not notified", mId);
-        return nullptr;
-    }
-    return device;
-}
-#else
 sp<acam::CameraDevice>
 ACameraCaptureSession::getDeviceSp() {
     sp<acam::CameraDevice> device = mDevice.promote();
@@ -208,4 +152,5 @@ ACameraCaptureSession::getDeviceSp() {
     }
     return device;
 }
-#endif
+
+

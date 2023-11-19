@@ -52,41 +52,38 @@
 #include <android/hardware/camera/device/3.7/ICameraInjectionSession.h>
 #include <android/hardware/camera2/ICameraDeviceUser.h>
 
-#include "CameraService.h"
-#include "aidl/android/hardware/graphics/common/Dataspace.h"
-#include "aidl/AidlUtils.h"
-#include "device3/Camera3Device.h"
-#include "device3/Camera3FakeStream.h"
-#include "device3/Camera3InputStream.h"
-#include "device3/Camera3OutputStream.h"
-#include "device3/Camera3SharedOutputStream.h"
-#include "mediautils/SchedulingPolicyService.h"
-#include "utils/CameraThreadState.h"
 #include "utils/CameraTraces.h"
+#include "mediautils/SchedulingPolicyService.h"
+#include "device3/Camera3Device.h"
+#include "device3/Camera3OutputStream.h"
+#include "device3/Camera3InputStream.h"
+#include "device3/Camera3FakeStream.h"
+#include "device3/Camera3SharedOutputStream.h"
+#include "CameraService.h"
+#include "utils/CameraThreadState.h"
 #include "utils/SessionConfigurationUtils.h"
 #include "utils/TraceHFR.h"
+#include "utils/CameraServiceProxyWrapper.h"
 
 #include <algorithm>
 #include <tuple>
 
 using namespace android::camera3;
 using namespace android::hardware::camera;
+using namespace android::hardware::camera::device::V3_2;
+using android::hardware::camera::metadata::V3_6::CameraMetadataEnumAndroidSensorPixelMode;
 
 namespace android {
 
-Camera3Device::Camera3Device(std::shared_ptr<CameraServiceProxyWrapper>& cameraServiceProxyWrapper,
-        const String8 &id, bool overrideForPerfClass, bool overrideToPortrait, bool legacyClient):
-        mCameraServiceProxyWrapper(cameraServiceProxyWrapper),
+Camera3Device::Camera3Device(const String8 &id, bool overrideForPerfClass, bool legacyClient):
         mId(id),
         mLegacyClient(legacyClient),
         mOperatingMode(NO_MODE),
         mIsConstrainedHighSpeedConfiguration(false),
-        mIsCompositeJpegRDisabled(false),
         mStatus(STATUS_UNINITIALIZED),
         mStatusWaiters(0),
         mUsePartialResult(false),
         mNumPartialResults(1),
-        mDeviceTimeBaseIsRealtime(false),
         mTimestampOffset(0),
         mNextResultFrameNumber(0),
         mNextReprocessResultFrameNumber(0),
@@ -98,13 +95,7 @@ Camera3Device::Camera3Device(std::shared_ptr<CameraServiceProxyWrapper>& cameraS
         mVendorTagId(CAMERA_METADATA_INVALID_VENDOR_ID),
         mLastTemplateId(-1),
         mNeedFixupMonochromeTags(false),
-        mOverrideForPerfClass(overrideForPerfClass),
-        mOverrideToPortrait(overrideToPortrait),
-        mRotateAndCropOverride(ANDROID_SCALER_ROTATE_AND_CROP_NONE),
-        mComposerOutput(false),
-        mAutoframingOverride(ANDROID_CONTROL_AUTOFRAMING_OFF),
-        mSettingsOverride(-1),
-        mActivePhysicalId("")
+        mOverrideForPerfClass(overrideForPerfClass)
 {
     ATRACE_CALL();
     ALOGV("%s: Created device for camera %s", __FUNCTION__, mId.string());
@@ -119,6 +110,164 @@ Camera3Device::~Camera3Device()
 
 const String8& Camera3Device::getId() const {
     return mId;
+}
+
+status_t Camera3Device::initialize(sp<CameraProviderManager> manager, const String8& monitorTags) {
+    ATRACE_CALL();
+    Mutex::Autolock il(mInterfaceLock);
+    Mutex::Autolock l(mLock);
+
+    ALOGV("%s: Initializing HIDL device for camera %s", __FUNCTION__, mId.string());
+    if (mStatus != STATUS_UNINITIALIZED) {
+        CLOGE("Already initialized!");
+        return INVALID_OPERATION;
+    }
+    if (manager == nullptr) return INVALID_OPERATION;
+
+    sp<ICameraDeviceSession> session;
+    ATRACE_BEGIN("CameraHal::openSession");
+    status_t res = manager->openSession(mId.string(), this,
+            /*out*/ &session);
+    ATRACE_END();
+    if (res != OK) {
+        SET_ERR_L("Could not open camera session: %s (%d)", strerror(-res), res);
+        return res;
+    }
+
+    res = manager->getCameraCharacteristics(mId.string(), mOverrideForPerfClass, &mDeviceInfo);
+    if (res != OK) {
+        SET_ERR_L("Could not retrieve camera characteristics: %s (%d)", strerror(-res), res);
+        session->close();
+        return res;
+    }
+    mSupportNativeZoomRatio = manager->supportNativeZoomRatio(mId.string());
+
+    std::vector<std::string> physicalCameraIds;
+    bool isLogical = manager->isLogicalCamera(mId.string(), &physicalCameraIds);
+    if (isLogical) {
+        for (auto& physicalId : physicalCameraIds) {
+            // Do not override characteristics for physical cameras
+            res = manager->getCameraCharacteristics(
+                    physicalId, /*overrideForPerfClass*/false, &mPhysicalDeviceInfoMap[physicalId]);
+            if (res != OK) {
+                SET_ERR_L("Could not retrieve camera %s characteristics: %s (%d)",
+                        physicalId.c_str(), strerror(-res), res);
+                session->close();
+                return res;
+            }
+
+            bool usePrecorrectArray =
+                    DistortionMapper::isDistortionSupported(mPhysicalDeviceInfoMap[physicalId]);
+            if (usePrecorrectArray) {
+                res = mDistortionMappers[physicalId].setupStaticInfo(
+                        mPhysicalDeviceInfoMap[physicalId]);
+                if (res != OK) {
+                    SET_ERR_L("Unable to read camera %s's calibration fields for distortion "
+                            "correction", physicalId.c_str());
+                    session->close();
+                    return res;
+                }
+            }
+
+            mZoomRatioMappers[physicalId] = ZoomRatioMapper(
+                    &mPhysicalDeviceInfoMap[physicalId],
+                    mSupportNativeZoomRatio, usePrecorrectArray);
+
+            if (SessionConfigurationUtils::isUltraHighResolutionSensor(
+                    mPhysicalDeviceInfoMap[physicalId])) {
+                mUHRCropAndMeteringRegionMappers[physicalId] =
+                        UHRCropAndMeteringRegionMapper(mPhysicalDeviceInfoMap[physicalId],
+                                usePrecorrectArray);
+            }
+        }
+    }
+
+    std::shared_ptr<RequestMetadataQueue> queue;
+    auto requestQueueRet = session->getCaptureRequestMetadataQueue(
+        [&queue](const auto& descriptor) {
+            queue = std::make_shared<RequestMetadataQueue>(descriptor);
+            if (!queue->isValid() || queue->availableToWrite() <= 0) {
+                ALOGE("HAL returns empty request metadata fmq, not use it");
+                queue = nullptr;
+                // don't use the queue onwards.
+            }
+        });
+    if (!requestQueueRet.isOk()) {
+        ALOGE("Transaction error when getting request metadata fmq: %s, not use it",
+                requestQueueRet.description().c_str());
+        return DEAD_OBJECT;
+    }
+
+    std::unique_ptr<ResultMetadataQueue>& resQueue = mResultMetadataQueue;
+    auto resultQueueRet = session->getCaptureResultMetadataQueue(
+        [&resQueue](const auto& descriptor) {
+            resQueue = std::make_unique<ResultMetadataQueue>(descriptor);
+            if (!resQueue->isValid() || resQueue->availableToWrite() <= 0) {
+                ALOGE("HAL returns empty result metadata fmq, not use it");
+                resQueue = nullptr;
+                // Don't use the resQueue onwards.
+            }
+        });
+    if (!resultQueueRet.isOk()) {
+        ALOGE("Transaction error when getting result metadata queue from camera session: %s",
+                resultQueueRet.description().c_str());
+        return DEAD_OBJECT;
+    }
+    IF_ALOGV() {
+        session->interfaceChain([](
+            ::android::hardware::hidl_vec<::android::hardware::hidl_string> interfaceChain) {
+                ALOGV("Session interface chain:");
+                for (const auto& iface : interfaceChain) {
+                    ALOGV("  %s", iface.c_str());
+                }
+            });
+    }
+
+    camera_metadata_entry bufMgrMode =
+            mDeviceInfo.find(ANDROID_INFO_SUPPORTED_BUFFER_MANAGEMENT_VERSION);
+    if (bufMgrMode.count > 0) {
+         mUseHalBufManager = (bufMgrMode.data.u8[0] ==
+            ANDROID_INFO_SUPPORTED_BUFFER_MANAGEMENT_VERSION_HIDL_DEVICE_3_5);
+    }
+
+    camera_metadata_entry_t capabilities = mDeviceInfo.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
+    for (size_t i = 0; i < capabilities.count; i++) {
+        uint8_t capability = capabilities.data.u8[i];
+        if (capability == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_OFFLINE_PROCESSING) {
+            mSupportOfflineProcessing = true;
+        }
+    }
+
+    mInterface = new HalInterface(session, queue, mUseHalBufManager, mSupportOfflineProcessing);
+    std::string providerType;
+    mVendorTagId = manager->getProviderTagIdLocked(mId.string());
+    mTagMonitor.initialize(mVendorTagId);
+    if (!monitorTags.isEmpty()) {
+        mTagMonitor.parseTagsToMonitor(String8(monitorTags));
+    }
+
+    // Metadata tags needs fixup for monochrome camera device version less
+    // than 3.5.
+    hardware::hidl_version maxVersion{0,0};
+    res = manager->getHighestSupportedVersion(mId.string(), &maxVersion);
+    if (res != OK) {
+        ALOGE("%s: Error in getting camera device version id: %s (%d)",
+                __FUNCTION__, strerror(-res), res);
+        return res;
+    }
+    int deviceVersion = HARDWARE_DEVICE_API_VERSION(
+            maxVersion.get_major(), maxVersion.get_minor());
+
+    bool isMonochrome = false;
+    for (size_t i = 0; i < capabilities.count; i++) {
+        uint8_t capability = capabilities.data.u8[i];
+        if (capability == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_MONOCHROME) {
+            isMonochrome = true;
+        }
+    }
+    mNeedFixupMonochromeTags = (isMonochrome && deviceVersion < CAMERA_DEVICE_API_VERSION_3_5);
+
+    return initializeCommonLocked();
 }
 
 status_t Camera3Device::initializeCommonLocked() {
@@ -173,21 +322,10 @@ status_t Camera3Device::initializeCommonLocked() {
         }
     }
 
-    camera_metadata_entry_t availableSettingsOverrides = mDeviceInfo.find(
-            ANDROID_CONTROL_AVAILABLE_SETTINGS_OVERRIDES);
-    for (size_t i = 0; i < availableSettingsOverrides.count; i++) {
-        if (availableSettingsOverrides.data.i32[i] ==
-                ANDROID_CONTROL_SETTINGS_OVERRIDE_ZOOM) {
-            mSupportZoomOverride = true;
-            break;
-        }
-    }
-
     /** Start up request queue thread */
-    mRequestThread = createNewRequestThread(
+    mRequestThread = new RequestThread(
             this, mStatusTracker, mInterface, sessionParamKeys,
-            mUseHalBufManager, mSupportCameraMute, mOverrideToPortrait,
-            mSupportZoomOverride);
+            mUseHalBufManager, mSupportCameraMute);
     res = mRequestThread->run(String8::format("C3Dev-%s-ReqQueue", mId.string()).string());
     if (res != OK) {
         SET_ERR_L("Unable to start request queue thread: %s (%d)",
@@ -207,12 +345,11 @@ status_t Camera3Device::initializeCommonLocked() {
     mIsInputStreamMultiResolution = false;
 
     // Measure the clock domain offset between camera and video/hw_composer
-    mTimestampOffset = getMonoToBoottimeOffset();
     camera_metadata_entry timestampSource =
             mDeviceInfo.find(ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE);
     if (timestampSource.count > 0 && timestampSource.data.u8[0] ==
             ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
-        mDeviceTimeBaseIsRealtime = true;
+        mTimestampOffset = getMonoToBoottimeOffset();
     }
 
     // Will the HAL be sending in early partial result metadata?
@@ -235,7 +372,7 @@ status_t Camera3Device::initializeCommonLocked() {
     mZoomRatioMappers[mId.c_str()] = ZoomRatioMapper(&mDeviceInfo,
             mSupportNativeZoomRatio, usePrecorrectArray);
 
-    if (SessionConfigurationUtils::supportsUltraHighResolutionCapture(mDeviceInfo)) {
+    if (SessionConfigurationUtils::isUltraHighResolutionSensor(mDeviceInfo)) {
         mUHRCropAndMeteringRegionMappers[mId.c_str()] =
                 UHRCropAndMeteringRegionMapper(mDeviceInfo, usePrecorrectArray);
     }
@@ -244,17 +381,7 @@ status_t Camera3Device::initializeCommonLocked() {
         mRotateAndCropMappers.emplace(mId.c_str(), &mDeviceInfo);
     }
 
-    // Hidl/AidlCamera3DeviceInjectionMethods
-    mInjectionMethods = createCamera3DeviceInjectionMethods(this);
-
-    /** Start watchdog thread */
-    mCameraServiceWatchdog = new CameraServiceWatchdog(mId, mCameraServiceProxyWrapper);
-    res = mCameraServiceWatchdog->run("CameraServiceWatchdog");
-    if (res != OK) {
-        SET_ERR_L("Unable to start camera service watchdog thread: %s (%d)",
-                strerror(-res), res);
-        return res;
-    }
+    mInjectionMethods = new Camera3DeviceInjectionMethods(this);
 
     return OK;
 }
@@ -265,26 +392,25 @@ status_t Camera3Device::disconnect() {
 
 status_t Camera3Device::disconnectImpl() {
     ATRACE_CALL();
-    Mutex::Autolock il(mInterfaceLock);
-
     ALOGI("%s: E", __FUNCTION__);
 
     status_t res = OK;
     std::vector<wp<Camera3StreamInterface>> streams;
-    nsecs_t maxExpectedDuration = getExpectedInFlightDuration();
     {
-        Mutex::Autolock l(mLock);
-        if (mStatus == STATUS_UNINITIALIZED) return res;
+        Mutex::Autolock il(mInterfaceLock);
+        nsecs_t maxExpectedDuration = getExpectedInFlightDuration();
+        {
+            Mutex::Autolock l(mLock);
+            if (mStatus == STATUS_UNINITIALIZED) return res;
 
-        if (mRequestThread != NULL) {
-            if (mStatus == STATUS_ACTIVE || mStatus == STATUS_ERROR) {
-                res = mRequestThread->clear();
+            if (mStatus == STATUS_ACTIVE ||
+                    (mStatus == STATUS_ERROR && mRequestThread != NULL)) {
+                res = mRequestThread->clearRepeatingRequests();
                 if (res != OK) {
                     SET_ERR_L("Can't stop streaming");
                     // Continue to close device even in case of error
                 } else {
-                    res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration,
-                                  /*requestThreadInvocation*/ false);
+                    res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration);
                     if (res != OK) {
                         SET_ERR_L("Timeout waiting for HAL to drain (% " PRIi64 " ns)",
                                 maxExpectedDuration);
@@ -292,92 +418,82 @@ status_t Camera3Device::disconnectImpl() {
                     }
                 }
             }
-            // Signal to request thread that we're not expecting any
-            // more requests. This will be true since once we're in
-            // disconnect and we've cleared off the request queue, the
-            // request thread can't receive any new requests through
-            // binder calls - since disconnect holds
-            // mBinderSerialization lock.
-            mRequestThread->setRequestClearing();
-        }
 
-        if (mStatus == STATUS_ERROR) {
-            CLOGE("Shutting down in an error state");
-        }
+            if (mStatus == STATUS_ERROR) {
+                CLOGE("Shutting down in an error state");
+            }
 
-        if (mStatusTracker != NULL) {
-            mStatusTracker->requestExit();
-        }
+            if (mStatusTracker != NULL) {
+                mStatusTracker->requestExit();
+            }
 
-        if (mRequestThread != NULL) {
-            mRequestThread->requestExit();
-        }
+            if (mRequestThread != NULL) {
+                mRequestThread->requestExit();
+            }
 
-        streams.reserve(mOutputStreams.size() + (mInputStream != nullptr ? 1 : 0));
-        for (size_t i = 0; i < mOutputStreams.size(); i++) {
-            streams.push_back(mOutputStreams[i]);
-        }
-        if (mInputStream != nullptr) {
-            streams.push_back(mInputStream);
+            streams.reserve(mOutputStreams.size() + (mInputStream != nullptr ? 1 : 0));
+            for (size_t i = 0; i < mOutputStreams.size(); i++) {
+                streams.push_back(mOutputStreams[i]);
+            }
+            if (mInputStream != nullptr) {
+                streams.push_back(mInputStream);
+            }
         }
     }
-
-    // Joining done without holding mLock, otherwise deadlocks may ensue
-    // as the threads try to access parent state
+    // Joining done without holding mLock and mInterfaceLock, otherwise deadlocks may ensue
+    // as the threads try to access parent state (b/143513518)
     if (mRequestThread != NULL && mStatus != STATUS_ERROR) {
         // HAL may be in a bad state, so waiting for request thread
         // (which may be stuck in the HAL processCaptureRequest call)
         // could be dangerous.
+        // give up mInterfaceLock here and then lock it again. Could this lead
+        // to other deadlocks
         mRequestThread->join();
     }
-
-    if (mStatusTracker != NULL) {
-        mStatusTracker->join();
-    }
-
-    if (mInjectionMethods->isInjecting()) {
-        mInjectionMethods->stopInjection();
-    }
-
-    HalInterface* interface;
     {
-        Mutex::Autolock l(mLock);
-        mRequestThread.clear();
-        Mutex::Autolock stLock(mTrackerLock);
-        mStatusTracker.clear();
-        interface = mInterface.get();
-    }
+        Mutex::Autolock il(mInterfaceLock);
+        if (mStatusTracker != NULL) {
+            mStatusTracker->join();
+        }
 
-    // Call close without internal mutex held, as the HAL close may need to
-    // wait on assorted callbacks,etc, to complete before it can return.
-    mCameraServiceWatchdog->WATCH(interface->close());
+        if (mInjectionMethods->isInjecting()) {
+            mInjectionMethods->stopInjection();
+        }
 
-    flushInflightRequests();
+        HalInterface* interface;
+        {
+            Mutex::Autolock l(mLock);
+            mRequestThread.clear();
+            Mutex::Autolock stLock(mTrackerLock);
+            mStatusTracker.clear();
+            interface = mInterface.get();
+        }
 
-    {
-        Mutex::Autolock l(mLock);
-        mInterface->clear();
-        mOutputStreams.clear();
-        mInputStream.clear();
-        mDeletedStreams.clear();
-        mBufferManager.clear();
-        internalUpdateStatusLocked(STATUS_UNINITIALIZED);
-    }
+        // Call close without internal mutex held, as the HAL close may need to
+        // wait on assorted callbacks,etc, to complete before it can return.
+        interface->close();
 
-    for (auto& weakStream : streams) {
-        sp<Camera3StreamInterface> stream = weakStream.promote();
-        if (stream != nullptr) {
-            ALOGE("%s: Stream %d leaked! strong reference (%d)!",
-                    __FUNCTION__, stream->getId(), stream->getStrongCount() - 1);
+        flushInflightRequests();
+
+        {
+            Mutex::Autolock l(mLock);
+            mInterface->clear();
+            mOutputStreams.clear();
+            mInputStream.clear();
+            mDeletedStreams.clear();
+            mBufferManager.clear();
+            internalUpdateStatusLocked(STATUS_UNINITIALIZED);
+        }
+
+        for (auto& weakStream : streams) {
+              sp<Camera3StreamInterface> stream = weakStream.promote();
+            if (stream != nullptr) {
+                ALOGE("%s: Stream %d leaked! strong reference (%d)!",
+                        __FUNCTION__, stream->getId(), stream->getStrongCount() - 1);
+            }
         }
     }
     ALOGI("%s: X", __FUNCTION__);
-
-    if (mCameraServiceWatchdog != NULL) {
-        mCameraServiceWatchdog->requestExit();
-        mCameraServiceWatchdog.clear();
-    }
-
     return res;
 }
 
@@ -415,12 +531,83 @@ nsecs_t Camera3Device::getMonoToBoottimeOffset() {
     return measured;
 }
 
+hardware::graphics::common::V1_0::PixelFormat Camera3Device::mapToPixelFormat(
+        int frameworkFormat) {
+    return (hardware::graphics::common::V1_0::PixelFormat) frameworkFormat;
+}
+
+DataspaceFlags Camera3Device::mapToHidlDataspace(
+        android_dataspace dataSpace) {
+    return dataSpace;
+}
+
+BufferUsageFlags Camera3Device::mapToConsumerUsage(
+        uint64_t usage) {
+    return usage;
+}
+
+StreamRotation Camera3Device::mapToStreamRotation(camera_stream_rotation_t rotation) {
+    switch (rotation) {
+        case CAMERA_STREAM_ROTATION_0:
+            return StreamRotation::ROTATION_0;
+        case CAMERA_STREAM_ROTATION_90:
+            return StreamRotation::ROTATION_90;
+        case CAMERA_STREAM_ROTATION_180:
+            return StreamRotation::ROTATION_180;
+        case CAMERA_STREAM_ROTATION_270:
+            return StreamRotation::ROTATION_270;
+    }
+    ALOGE("%s: Unknown stream rotation %d", __FUNCTION__, rotation);
+    return StreamRotation::ROTATION_0;
+}
+
+status_t Camera3Device::mapToStreamConfigurationMode(
+        camera_stream_configuration_mode_t operationMode, StreamConfigurationMode *mode) {
+    if (mode == nullptr) return BAD_VALUE;
+    if (operationMode < CAMERA_VENDOR_STREAM_CONFIGURATION_MODE_START) {
+        switch(operationMode) {
+            case CAMERA_STREAM_CONFIGURATION_NORMAL_MODE:
+                *mode = StreamConfigurationMode::NORMAL_MODE;
+                break;
+            case CAMERA_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE:
+                *mode = StreamConfigurationMode::CONSTRAINED_HIGH_SPEED_MODE;
+                break;
+            default:
+                ALOGE("%s: Unknown stream configuration mode %d", __FUNCTION__, operationMode);
+                return BAD_VALUE;
+        }
+    } else {
+        *mode = static_cast<StreamConfigurationMode>(operationMode);
+    }
+    return OK;
+}
+
+int Camera3Device::mapToFrameworkFormat(
+        hardware::graphics::common::V1_0::PixelFormat pixelFormat) {
+    return static_cast<uint32_t>(pixelFormat);
+}
+
+android_dataspace Camera3Device::mapToFrameworkDataspace(
+        DataspaceFlags dataSpace) {
+    return static_cast<android_dataspace>(dataSpace);
+}
+
+uint64_t Camera3Device::mapConsumerToFrameworkUsage(
+        BufferUsageFlags usage) {
+    return usage;
+}
+
+uint64_t Camera3Device::mapProducerToFrameworkUsage(
+        BufferUsageFlags usage) {
+    return usage;
+}
+
 ssize_t Camera3Device::getJpegBufferSize(const CameraMetadata &info, uint32_t width,
         uint32_t height) const {
     // Get max jpeg size (area-wise) for default sensor pixel mode
     camera3::Size maxDefaultJpegResolution =
             SessionConfigurationUtils::getMaxJpegResolution(info,
-                    /*supportsUltraHighResolutionCapture*/false);
+                    /*isUltraHighResolutionSensor*/false);
     // Get max jpeg size (area-wise) for max resolution sensor pixel mode / 0 if
     // not ultra high res sensor
     camera3::Size uhrMaxJpegResolution =
@@ -513,8 +700,9 @@ ssize_t Camera3Device::getRawOpaqueBufferSize(const CameraMetadata &info, int32_
     return BAD_VALUE;
 }
 
-status_t Camera3Device::dump(int fd, [[maybe_unused]] const Vector<String16> &args) {
+status_t Camera3Device::dump(int fd, const Vector<String16> &args) {
     ATRACE_CALL();
+    (void)args;
 
     // Try to lock, but continue in case of failure (to avoid blocking in
     // deadlocks)
@@ -566,9 +754,10 @@ status_t Camera3Device::dump(int fd, [[maybe_unused]] const Vector<String16> &ar
     }
     lines.appendFormat("    Stream configuration:\n");
     const char *mode =
-            mOperatingMode == CAMERA_STREAM_CONFIGURATION_NORMAL_MODE ? "NORMAL" :
-            mOperatingMode == CAMERA_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE ?
-                    "CONSTRAINED_HIGH_SPEED" : "CUSTOM";
+            mOperatingMode == static_cast<int>(StreamConfigurationMode::NORMAL_MODE) ? "NORMAL" :
+            mOperatingMode == static_cast<int>(
+                StreamConfigurationMode::CONSTRAINED_HIGH_SPEED_MODE) ? "CONSTRAINED_HIGH_SPEED" :
+            "CUSTOM";
     lines.appendFormat("    Operation mode: %s (%d) \n", mode, mOperatingMode);
 
     if (mInputStream != NULL) {
@@ -658,21 +847,6 @@ status_t Camera3Device::dump(int fd, [[maybe_unused]] const Vector<String16> &ar
     if (gotLock) mLock.unlock();
     if (gotInterfaceLock) mInterfaceLock.unlock();
 
-    return OK;
-}
-
-status_t Camera3Device::startWatchingTags(const String8 &tags) {
-    mTagMonitor.parseTagsToMonitor(tags);
-    return OK;
-}
-
-status_t Camera3Device::stopWatchingTags() {
-    mTagMonitor.disableMonitoring();
-    return OK;
-}
-
-status_t Camera3Device::dumpWatchedEventsToVector(std::vector<std::string> &out) {
-    mTagMonitor.getLatestMonitoredTagEvents(out);
     return OK;
 }
 
@@ -840,7 +1014,7 @@ status_t Camera3Device::submitRequestsHelper(
     }
 
     if (res == OK) {
-        waitUntilStateThenRelock(/*active*/true, kActiveTimeout, /*requestThreadInvocation*/false);
+        waitUntilStateThenRelock(/*active*/true, kActiveTimeout);
         if (res != OK) {
             SET_ERR_L("Can't transition to active in %f seconds!",
                     kActiveTimeout/1e9);
@@ -853,6 +1027,176 @@ status_t Camera3Device::submitRequestsHelper(
     }
 
     return res;
+}
+
+hardware::Return<void> Camera3Device::requestStreamBuffers(
+        const hardware::hidl_vec<hardware::camera::device::V3_5::BufferRequest>& bufReqs,
+        requestStreamBuffers_cb _hidl_cb) {
+    RequestBufferStates states {
+        mId, mRequestBufferInterfaceLock, mUseHalBufManager, mOutputStreams, mSessionStatsBuilder,
+        *this, *mInterface, *this};
+    camera3::requestStreamBuffers(states, bufReqs, _hidl_cb);
+    return hardware::Void();
+}
+
+hardware::Return<void> Camera3Device::returnStreamBuffers(
+        const hardware::hidl_vec<hardware::camera::device::V3_2::StreamBuffer>& buffers) {
+    ReturnBufferStates states {
+        mId, mUseHalBufManager, mOutputStreams, mSessionStatsBuilder, *mInterface};
+    camera3::returnStreamBuffers(states, buffers);
+    return hardware::Void();
+}
+
+hardware::Return<void> Camera3Device::processCaptureResult_3_4(
+        const hardware::hidl_vec<
+                hardware::camera::device::V3_4::CaptureResult>& results) {
+    // Ideally we should grab mLock, but that can lead to deadlock, and
+    // it's not super important to get up to date value of mStatus for this
+    // warning print, hence skipping the lock here
+    if (mStatus == STATUS_ERROR) {
+        // Per API contract, HAL should act as closed after device error
+        // But mStatus can be set to error by framework as well, so just log
+        // a warning here.
+        ALOGW("%s: received capture result in error state.", __FUNCTION__);
+    }
+
+    sp<NotificationListener> listener;
+    {
+        std::lock_guard<std::mutex> l(mOutputLock);
+        listener = mListener.promote();
+    }
+
+    if (mProcessCaptureResultLock.tryLock() != OK) {
+        // This should never happen; it indicates a wrong client implementation
+        // that doesn't follow the contract. But, we can be tolerant here.
+        ALOGE("%s: callback overlapped! waiting 1s...",
+                __FUNCTION__);
+        if (mProcessCaptureResultLock.timedLock(1000000000 /* 1s */) != OK) {
+            ALOGE("%s: cannot acquire lock in 1s, dropping results",
+                    __FUNCTION__);
+            // really don't know what to do, so bail out.
+            return hardware::Void();
+        }
+    }
+    CaptureOutputStates states {
+        mId,
+        mInFlightLock, mLastCompletedRegularFrameNumber,
+        mLastCompletedReprocessFrameNumber, mLastCompletedZslFrameNumber,
+        mInFlightMap, mOutputLock,  mResultQueue, mResultSignal,
+        mNextShutterFrameNumber,
+        mNextReprocessShutterFrameNumber, mNextZslStillShutterFrameNumber,
+        mNextResultFrameNumber,
+        mNextReprocessResultFrameNumber, mNextZslStillResultFrameNumber,
+        mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
+        mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
+        mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
+        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
+        *mInterface, mLegacyClient
+    };
+
+    for (const auto& result : results) {
+        processOneCaptureResultLocked(states, result.v3_2, result.physicalCameraMetadata);
+    }
+    mProcessCaptureResultLock.unlock();
+    return hardware::Void();
+}
+
+// Only one processCaptureResult should be called at a time, so
+// the locks won't block. The locks are present here simply to enforce this.
+hardware::Return<void> Camera3Device::processCaptureResult(
+        const hardware::hidl_vec<
+                hardware::camera::device::V3_2::CaptureResult>& results) {
+    hardware::hidl_vec<hardware::camera::device::V3_4::PhysicalCameraMetadata> noPhysMetadata;
+
+    // Ideally we should grab mLock, but that can lead to deadlock, and
+    // it's not super important to get up to date value of mStatus for this
+    // warning print, hence skipping the lock here
+    if (mStatus == STATUS_ERROR) {
+        // Per API contract, HAL should act as closed after device error
+        // But mStatus can be set to error by framework as well, so just log
+        // a warning here.
+        ALOGW("%s: received capture result in error state.", __FUNCTION__);
+    }
+
+    sp<NotificationListener> listener;
+    {
+        std::lock_guard<std::mutex> l(mOutputLock);
+        listener = mListener.promote();
+    }
+
+    if (mProcessCaptureResultLock.tryLock() != OK) {
+        // This should never happen; it indicates a wrong client implementation
+        // that doesn't follow the contract. But, we can be tolerant here.
+        ALOGE("%s: callback overlapped! waiting 1s...",
+                __FUNCTION__);
+        if (mProcessCaptureResultLock.timedLock(1000000000 /* 1s */) != OK) {
+            ALOGE("%s: cannot acquire lock in 1s, dropping results",
+                    __FUNCTION__);
+            // really don't know what to do, so bail out.
+            return hardware::Void();
+        }
+    }
+
+    CaptureOutputStates states {
+        mId,
+        mInFlightLock, mLastCompletedRegularFrameNumber,
+        mLastCompletedReprocessFrameNumber, mLastCompletedZslFrameNumber,
+        mInFlightMap, mOutputLock,  mResultQueue, mResultSignal,
+        mNextShutterFrameNumber,
+        mNextReprocessShutterFrameNumber, mNextZslStillShutterFrameNumber,
+        mNextResultFrameNumber,
+        mNextReprocessResultFrameNumber, mNextZslStillResultFrameNumber,
+        mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
+        mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
+        mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
+        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
+        *mInterface, mLegacyClient
+    };
+
+    for (const auto& result : results) {
+        processOneCaptureResultLocked(states, result, noPhysMetadata);
+    }
+    mProcessCaptureResultLock.unlock();
+    return hardware::Void();
+}
+
+hardware::Return<void> Camera3Device::notify(
+        const hardware::hidl_vec<hardware::camera::device::V3_2::NotifyMsg>& msgs) {
+    // Ideally we should grab mLock, but that can lead to deadlock, and
+    // it's not super important to get up to date value of mStatus for this
+    // warning print, hence skipping the lock here
+    if (mStatus == STATUS_ERROR) {
+        // Per API contract, HAL should act as closed after device error
+        // But mStatus can be set to error by framework as well, so just log
+        // a warning here.
+        ALOGW("%s: received notify message in error state.", __FUNCTION__);
+    }
+
+    sp<NotificationListener> listener;
+    {
+        std::lock_guard<std::mutex> l(mOutputLock);
+        listener = mListener.promote();
+    }
+
+    CaptureOutputStates states {
+        mId,
+        mInFlightLock, mLastCompletedRegularFrameNumber,
+        mLastCompletedReprocessFrameNumber, mLastCompletedZslFrameNumber,
+        mInFlightMap, mOutputLock,  mResultQueue, mResultSignal,
+        mNextShutterFrameNumber,
+        mNextReprocessShutterFrameNumber, mNextZslStillShutterFrameNumber,
+        mNextResultFrameNumber,
+        mNextReprocessResultFrameNumber, mNextZslStillResultFrameNumber,
+        mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
+        mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
+        mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
+        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
+        *mInterface, mLegacyClient
+    };
+    for (const auto& msg : msgs) {
+        camera3::notify(states, msg);
+    }
+    return hardware::Void();
 }
 
 status_t Camera3Device::captureList(const List<const PhysicalCameraSettingsList> &requestsList,
@@ -965,8 +1309,7 @@ status_t Camera3Device::createInputStream(
             break;
         case STATUS_ACTIVE:
             ALOGV("%s: Stopping activity to reconfigure streams", __FUNCTION__);
-            res = internalPauseAndWaitLocked(maxExpectedDuration,
-                          /*requestThreadInvocation*/ false);
+            res = internalPauseAndWaitLocked(maxExpectedDuration);
             if (res != OK) {
                 SET_ERR_L("Can't pause captures to reconfigure streams!");
                 return res;
@@ -1016,8 +1359,7 @@ status_t Camera3Device::createStream(sp<Surface> consumer,
             const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
             std::vector<int> *surfaceIds, int streamSetId, bool isShared, bool isMultiResolution,
-            uint64_t consumerUsage, int64_t dynamicRangeProfile, int64_t streamUseCase,
-            int timestampBase, int mirrorMode, int32_t colorSpace, bool useReadoutTimestamp) {
+            uint64_t consumerUsage) {
     ATRACE_CALL();
 
     if (consumer == nullptr) {
@@ -1030,8 +1372,7 @@ status_t Camera3Device::createStream(sp<Surface> consumer,
 
     return createStream(consumers, /*hasDeferredConsumer*/ false, width, height,
             format, dataSpace, rotation, id, physicalCameraId, sensorPixelModesUsed, surfaceIds,
-            streamSetId, isShared, isMultiResolution, consumerUsage, dynamicRangeProfile,
-            streamUseCase, timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+            streamSetId, isShared, isMultiResolution, consumerUsage);
 }
 
 static bool isRawFormat(int format) {
@@ -1051,21 +1392,16 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         android_dataspace dataSpace, camera_stream_rotation_t rotation, int *id,
         const String8& physicalCameraId, const std::unordered_set<int32_t> &sensorPixelModesUsed,
         std::vector<int> *surfaceIds, int streamSetId, bool isShared, bool isMultiResolution,
-        uint64_t consumerUsage, int64_t dynamicRangeProfile, int64_t streamUseCase,
-        int timestampBase, int mirrorMode, int32_t colorSpace, bool useReadoutTimestamp) {
+        uint64_t consumerUsage) {
     ATRACE_CALL();
 
     Mutex::Autolock il(mInterfaceLock);
     nsecs_t maxExpectedDuration = getExpectedInFlightDuration();
     Mutex::Autolock l(mLock);
     ALOGV("Camera %s: Creating new stream %d: %d x %d, format %d, dataspace %d rotation %d"
-            " consumer usage %" PRIu64 ", isShared %d, physicalCameraId %s, isMultiResolution %d"
-            " dynamicRangeProfile 0x%" PRIx64 ", streamUseCase %" PRId64 ", timestampBase %d,"
-            " mirrorMode %d, colorSpace %d, useReadoutTimestamp %d",
+            " consumer usage %" PRIu64 ", isShared %d, physicalCameraId %s, isMultiResolution %d",
             mId.string(), mNextStreamId, width, height, format, dataSpace, rotation,
-            consumerUsage, isShared, physicalCameraId.string(), isMultiResolution,
-            dynamicRangeProfile, streamUseCase, timestampBase, mirrorMode, colorSpace,
-            useReadoutTimestamp);
+            consumerUsage, isShared, physicalCameraId.string(), isMultiResolution);
 
     status_t res;
     bool wasActive = false;
@@ -1083,8 +1419,7 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
             break;
         case STATUS_ACTIVE:
             ALOGV("%s: Stopping activity to reconfigure streams", __FUNCTION__);
-            res = internalPauseAndWaitLocked(maxExpectedDuration,
-                          /*requestThreadInvocation*/ false);
+            res = internalPauseAndWaitLocked(maxExpectedDuration);
             if (res != OK) {
                 SET_ERR_L("Can't pause captures to reconfigure streams!");
                 return res;
@@ -1115,7 +1450,6 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         ALOGE("%s: RAW opaque stream cannot be used with > 1 sensor pixel modes", __FUNCTION__);
         return BAD_VALUE;
     }
-    IPCTransport transport = getTransportType();
     if (format == HAL_PIXEL_FORMAT_BLOB) {
         ssize_t blobBufferSize;
         if (dataSpace == HAL_DATASPACE_DEPTH) {
@@ -1135,9 +1469,8 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         }
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, blobBufferSize, format, dataSpace, rotation,
-                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, transport, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
-                timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
+                isMultiResolution);
     } else if (format == HAL_PIXEL_FORMAT_RAW_OPAQUE) {
         bool maxResolution =
                 sensorPixelModesUsed.find(ANDROID_SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION) !=
@@ -1150,27 +1483,23 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         }
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, rawOpaqueBufferSize, format, dataSpace, rotation,
-                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, transport, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
-                timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
+                isMultiResolution);
     } else if (isShared) {
         newStream = new Camera3SharedOutputStream(mNextStreamId, consumers,
                 width, height, format, consumerUsage, dataSpace, rotation,
-                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, transport, streamSetId,
-                mUseHalBufManager, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
-                timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
+                mUseHalBufManager);
     } else if (consumers.size() == 0 && hasDeferredConsumer) {
         newStream = new Camera3OutputStream(mNextStreamId,
                 width, height, format, consumerUsage, dataSpace, rotation,
-                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, transport, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
-                timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
+                isMultiResolution);
     } else {
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, format, dataSpace, rotation,
-                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, transport, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
-                timestampBase, mirrorMode, colorSpace, useReadoutTimestamp);
+                mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
+                isMultiResolution);
     }
 
     size_t consumerCount = consumers.size();
@@ -1257,8 +1586,6 @@ status_t Camera3Device::getStreamInfo(int id, StreamInfo *streamInfo) {
     streamInfo->originalFormat = stream->getOriginalFormat();
     streamInfo->dataSpaceOverridden = stream->isDataSpaceOverridden();
     streamInfo->originalDataSpace = stream->getOriginalDataSpace();
-    streamInfo->dynamicRangeProfile = stream->getDynamicRangeProfile();
-    streamInfo->colorSpace = stream->getColorSpace();
     return OK;
 }
 
@@ -1290,7 +1617,7 @@ status_t Camera3Device::setStreamTransform(int id,
         CLOGE("Stream %d does not exist", id);
         return BAD_VALUE;
     }
-    return stream->setTransform(transform, false /*mayChangeMirror*/);
+    return stream->setTransform(transform);
 }
 
 status_t Camera3Device::deleteStream(int id) {
@@ -1379,49 +1706,12 @@ status_t Camera3Device::filterParamsAndConfigureLocked(const CameraMetadata& ses
     set_camera_metadata_vendor_id(meta, mVendorTagId);
     filteredParams.unlock(meta);
     if (availableSessionKeys.count > 0) {
-        bool rotateAndCropSessionKey = false;
-        bool autoframingSessionKey = false;
         for (size_t i = 0; i < availableSessionKeys.count; i++) {
             camera_metadata_ro_entry entry = params.find(
                     availableSessionKeys.data.i32[i]);
             if (entry.count > 0) {
                 filteredParams.update(entry);
             }
-            if (ANDROID_SCALER_ROTATE_AND_CROP == availableSessionKeys.data.i32[i]) {
-                rotateAndCropSessionKey = true;
-            }
-            if (ANDROID_CONTROL_AUTOFRAMING == availableSessionKeys.data.i32[i]) {
-                autoframingSessionKey = true;
-            }
-        }
-
-        if (rotateAndCropSessionKey || autoframingSessionKey) {
-            sp<CaptureRequest> request = new CaptureRequest();
-            PhysicalCameraSettings settingsList;
-            settingsList.metadata = filteredParams;
-            request->mSettingsList.push_back(settingsList);
-
-            if (rotateAndCropSessionKey) {
-                auto rotateAndCropEntry = filteredParams.find(ANDROID_SCALER_ROTATE_AND_CROP);
-                if (rotateAndCropEntry.count > 0 &&
-                        rotateAndCropEntry.data.u8[0] == ANDROID_SCALER_ROTATE_AND_CROP_AUTO) {
-                    request->mRotateAndCropAuto = true;
-                } else {
-                    request->mRotateAndCropAuto = false;
-                }
-
-                overrideAutoRotateAndCrop(request, mOverrideToPortrait, mRotateAndCropOverride);
-            }
-
-            if (autoframingSessionKey) {
-                auto autoframingEntry = filteredParams.find(ANDROID_CONTROL_AUTOFRAMING);
-                if (autoframingEntry.count > 0 &&
-                        autoframingEntry.data.u8[0] == ANDROID_CONTROL_AUTOFRAMING_AUTO) {
-                    overrideAutoframing(request, mAutoframingOverride);
-                }
-            }
-
-            filteredParams = request->mSettingsList.begin()->metadata;
         }
     }
 
@@ -1517,13 +1807,6 @@ status_t Camera3Device::createDefaultRequest(camera_request_template_t templateI
                     &kDefaultJpegQuality, 1);
         }
 
-        // Fill in AUTOFRAMING if not available
-        if (!mRequestTemplateCache[templateId].exists(ANDROID_CONTROL_AUTOFRAMING)) {
-            static const uint8_t kDefaultAutoframingMode = ANDROID_CONTROL_AUTOFRAMING_OFF;
-            mRequestTemplateCache[templateId].update(ANDROID_CONTROL_AUTOFRAMING,
-                    &kDefaultAutoframingMode, 1);
-        }
-
         *request = mRequestTemplateCache[templateId];
         mLastTemplateId = templateId;
     }
@@ -1557,8 +1840,7 @@ status_t Camera3Device::waitUntilDrainedLocked(nsecs_t maxExpectedDuration) {
     }
     ALOGV("%s: Camera %s: Waiting until idle (%" PRIi64 "ns)", __FUNCTION__, mId.string(),
             maxExpectedDuration);
-    status_t res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration,
-                           /*requestThreadInvocation*/ false);
+    status_t res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration);
     if (res != OK) {
         mStatusTracker->dumpActiveComponents();
         SET_ERR_L("Error waiting for HAL to drain: %s (%d)", strerror(-res),
@@ -1569,14 +1851,12 @@ status_t Camera3Device::waitUntilDrainedLocked(nsecs_t maxExpectedDuration) {
 
 void Camera3Device::internalUpdateStatusLocked(Status status) {
     mStatus = status;
-    mStatusIsInternal = mPauseStateNotify ? true : false;
-    mRecentStatusUpdates.add({mStatus, mStatusIsInternal});
+    mRecentStatusUpdates.add(mStatus);
     mStatusChanged.broadcast();
 }
 
 // Pause to reconfigure
-status_t Camera3Device::internalPauseAndWaitLocked(nsecs_t maxExpectedDuration,
-        bool requestThreadInvocation) {
+status_t Camera3Device::internalPauseAndWaitLocked(nsecs_t maxExpectedDuration) {
     if (mRequestThread.get() != nullptr) {
         mRequestThread->setPaused(true);
     } else {
@@ -1585,10 +1865,8 @@ status_t Camera3Device::internalPauseAndWaitLocked(nsecs_t maxExpectedDuration,
 
     ALOGV("%s: Camera %s: Internal wait until idle (% " PRIi64 " ns)", __FUNCTION__, mId.string(),
           maxExpectedDuration);
-    status_t res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration,
-                           requestThreadInvocation);
+    status_t res = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration);
     if (res != OK) {
-        mStatusTracker->dumpActiveComponents();
         SET_ERR_L("Can't idle device in %f seconds!",
                 maxExpectedDuration/1e9);
     }
@@ -1604,9 +1882,7 @@ status_t Camera3Device::internalResumeLocked() {
 
     ALOGV("%s: Camera %s: Internal wait until active (% " PRIi64 " ns)", __FUNCTION__, mId.string(),
             kActiveTimeout);
-    // internalResumeLocked is always called from a binder thread.
-    res = waitUntilStateThenRelock(/*active*/ true, kActiveTimeout,
-                  /*requestThreadInvocation*/ false);
+    res = waitUntilStateThenRelock(/*active*/ true, kActiveTimeout);
     if (res != OK) {
         SET_ERR_L("Can't transition to active in %f seconds!",
                 kActiveTimeout/1e9);
@@ -1615,8 +1891,7 @@ status_t Camera3Device::internalResumeLocked() {
     return OK;
 }
 
-status_t Camera3Device::waitUntilStateThenRelock(bool active, nsecs_t timeout,
-        bool requestThreadInvocation) {
+status_t Camera3Device::waitUntilStateThenRelock(bool active, nsecs_t timeout) {
     status_t res = OK;
 
     size_t startIndex = 0;
@@ -1643,27 +1918,13 @@ status_t Camera3Device::waitUntilStateThenRelock(bool active, nsecs_t timeout,
     }
 
     bool stateSeen = false;
-    nsecs_t startTime = systemTime();
     do {
-        if (mStatus == STATUS_ERROR) {
-            // Device in error state. Return right away.
-            break;
-        }
-        if (active == (mStatus == STATUS_ACTIVE) &&
-            (requestThreadInvocation || !mStatusIsInternal)) {
+        if (active == (mStatus == STATUS_ACTIVE)) {
             // Desired state is current
             break;
         }
 
-        nsecs_t timeElapsed = systemTime() - startTime;
-        nsecs_t timeToWait = timeout - timeElapsed;
-        if (timeToWait <= 0) {
-            // Thread woke up spuriously but has timed out since.
-            // Force out of loop with TIMED_OUT result.
-            res = TIMED_OUT;
-            break;
-        }
-        res = mStatusChanged.waitRelative(mLock, timeToWait);
+        res = mStatusChanged.waitRelative(mLock, timeout);
         if (res != OK) break;
 
         // This is impossible, but if not, could result in subtle deadlocks and invalid state
@@ -1672,19 +1933,9 @@ status_t Camera3Device::waitUntilStateThenRelock(bool active, nsecs_t timeout,
                 "%s: Skipping status updates in Camera3Device, may result in deadlock.",
                 __FUNCTION__);
 
-        // Encountered desired state since we began waiting. Internal invocations coming from
-        // request threads (such as reconfigureCamera) should be woken up immediately, whereas
-        // invocations from binder threads (such as createInputStream) should only be woken up if
-        // they are not paused. This avoids intermediate pause signals from reconfigureCamera as it
-        // changes the status to active right after.
+        // Encountered desired state since we began waiting
         for (size_t i = startIndex; i < mRecentStatusUpdates.size(); i++) {
-            if (mRecentStatusUpdates[i].status == STATUS_ERROR) {
-                // Device in error state. Return right away.
-                stateSeen = true;
-                break;
-            }
-            if (active == (mRecentStatusUpdates[i].status == STATUS_ACTIVE) &&
-                (requestThreadInvocation || !mRecentStatusUpdates[i].isInternal)) {
+            if (active == (mRecentStatusUpdates[i] == STATUS_ACTIVE) ) {
                 stateSeen = true;
                 break;
             }
@@ -1837,12 +2088,7 @@ status_t Camera3Device::flush(int64_t *frameNumber) {
         mSessionStatsBuilder.stopCounter();
     }
 
-    // Calculate expected duration for flush with additional buffer time in ms for watchdog
-    uint64_t maxExpectedDuration = ns2ms(getExpectedInFlightDuration() + kBaseGetBufferWait);
-    status_t res = mCameraServiceWatchdog->WATCH_CUSTOM_TIMER(mRequestThread->flush(),
-            maxExpectedDuration / kCycleLengthMs, kCycleLengthMs);
-
-    return res;
+    return mRequestThread->flush();
 }
 
 status_t Camera3Device::prepare(int streamId) {
@@ -1911,20 +2157,6 @@ status_t Camera3Device::addBufferListenerForStream(int streamId,
     return OK;
 }
 
-float Camera3Device::getMaxPreviewFps(sp<camera3::Camera3OutputStreamInterface> stream) {
-    camera_metadata_entry minDurations =
-            mDeviceInfo.find(ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS);
-    for (size_t i = 0; i < minDurations.count; i += 4) {
-        if (minDurations.data.i64[i] == stream->getOriginalFormat()
-                && minDurations.data.i64[i+1] == stream->getWidth()
-                && minDurations.data.i64[i+2] == stream->getHeight()) {
-            int64_t minFrameDuration = minDurations.data.i64[i+3];
-            return 1e9f / minFrameDuration;
-        }
-    }
-    return 0.0f;
-}
-
 /**
  * Methods called by subclasses
  */
@@ -1933,7 +2165,6 @@ void Camera3Device::notifyStatus(bool idle) {
     ATRACE_CALL();
     std::vector<int> streamIds;
     std::vector<hardware::CameraStreamStats> streamStats;
-    float sessionMaxPreviewFps = 0.0f;
 
     {
         // Need mLock to safely update state and synchronize to current
@@ -1953,29 +2184,21 @@ void Camera3Device::notifyStatus(bool idle) {
         // state changes
         if (mPauseStateNotify) return;
 
-        for (size_t i = 0; i < mOutputStreams.size(); i++) {
-            auto stream = mOutputStreams[i];
-            if (stream.get() == nullptr) continue;
-
-            float streamMaxPreviewFps = getMaxPreviewFps(stream);
-            sessionMaxPreviewFps = std::max(sessionMaxPreviewFps, streamMaxPreviewFps);
-
-            // Populate stream statistics in case of Idle
-            if (idle) {
+        // Populate stream statistics in case of Idle
+        if (idle) {
+            for (size_t i = 0; i < mOutputStreams.size(); i++) {
+                auto stream = mOutputStreams[i];
+                if (stream.get() == nullptr) continue;
                 streamIds.push_back(stream->getId());
                 Camera3Stream* camera3Stream = Camera3Stream::cast(stream->asHalStream());
                 int64_t usage = 0LL;
-                int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT;
                 if (camera3Stream != nullptr) {
                     usage = camera3Stream->getUsage();
-                    streamUseCase = camera3Stream->getStreamUseCase();
                 }
                 streamStats.emplace_back(stream->getWidth(), stream->getHeight(),
-                    stream->getOriginalFormat(), streamMaxPreviewFps, stream->getDataSpace(), usage,
+                    stream->getFormat(), stream->getDataSpace(), usage,
                     stream->getMaxHalBuffers(),
-                    stream->getMaxTotalBuffers() - stream->getMaxHalBuffers(),
-                    stream->getDynamicRangeProfile(), streamUseCase,
-                    stream->getColorSpace());
+                    stream->getMaxTotalBuffers() - stream->getMaxHalBuffers());
             }
         }
     }
@@ -2013,7 +2236,7 @@ void Camera3Device::notifyStatus(bool idle) {
             }
             listener->notifyIdle(requestCount, resultErrorCount, deviceError, streamStats);
         } else {
-            res = listener->notifyActive(sessionMaxPreviewFps);
+            res = listener->notifyActive();
         }
     }
     if (res != OK) {
@@ -2225,15 +2448,6 @@ sp<Camera3Device::CaptureRequest> Camera3Device::createCaptureRequest(
         newRequest->mRotateAndCropAuto = false;
     }
 
-    auto autoframingEntry =
-            newRequest->mSettingsList.begin()->metadata.find(ANDROID_CONTROL_AUTOFRAMING);
-    if (autoframingEntry.count > 0 &&
-            autoframingEntry.data.u8[0] == ANDROID_CONTROL_AUTOFRAMING_AUTO) {
-        newRequest->mAutoframingAuto = true;
-    } else {
-        newRequest->mAutoframingAuto = false;
-    }
-
     auto zoomRatioEntry =
             newRequest->mSettingsList.begin()->metadata.find(ANDROID_CONTROL_ZOOM_RATIO);
     if (zoomRatioEntry.count > 0 &&
@@ -2262,16 +2476,6 @@ sp<Camera3Device::CaptureRequest> Camera3Device::createCaptureRequest(
                 settings.mOriginalTestPatternData[2] = 0;
                 settings.mOriginalTestPatternData[3] = 0;
             }
-        }
-    }
-
-    if (mSupportZoomOverride) {
-        for (auto& settings : newRequest->mSettingsList) {
-            auto settingsOverrideEntry =
-                    settings.metadata.find(ANDROID_CONTROL_SETTINGS_OVERRIDE);
-            settings.mOriginalSettingsOverride = settingsOverrideEntry.count > 0 ?
-                    settingsOverrideEntry.data.i32[0] :
-                    ANDROID_CONTROL_SETTINGS_OVERRIDE_OFF;
         }
     }
 
@@ -2331,9 +2535,7 @@ bool Camera3Device::reconfigureCamera(const CameraMetadata& sessionParams, int c
 
     nsecs_t startTime = systemTime();
 
-    // We must not hold mInterfaceLock here since this function is called from
-    // RequestThread::threadLoop and holding mInterfaceLock could lead to
-    // deadlocks (http://b/143513518)
+    Mutex::Autolock il(mInterfaceLock);
     nsecs_t maxExpectedDuration = getExpectedInFlightDuration();
 
     // Make sure status tracker is flushed
@@ -2353,16 +2555,7 @@ bool Camera3Device::reconfigureCamera(const CameraMetadata& sessionParams, int c
         mPauseStateNotify = true;
         mStatusTracker->markComponentIdle(clientStatusId, Fence::NO_FENCE);
 
-        // This is essentially the same as calling rc = internalPauseAndWaitLocked(..), except that
-        // we don't want to call setPaused(true) to avoid it interfering with setPaused() called
-        // from createInputStream/createStream.
-        rc = waitUntilStateThenRelock(/*active*/ false, maxExpectedDuration,
-                /*requestThreadInvocation*/ true);
-        if (rc != OK) {
-            mStatusTracker->dumpActiveComponents();
-            SET_ERR_L("Can't idle device in %f seconds!",
-                maxExpectedDuration/1e9);
-        }
+        rc = internalPauseAndWaitLocked(maxExpectedDuration);
     }
 
     if (rc == NO_ERROR) {
@@ -2377,9 +2570,6 @@ bool Camera3Device::reconfigureCamera(const CameraMetadata& sessionParams, int c
             //present streams end up with outstanding buffers that will
             //not get drained.
             internalUpdateStatusLocked(STATUS_ACTIVE);
-
-            mCameraServiceProxyWrapper->logStreamConfigured(mId, mOperatingMode,
-                    true /*internalReconfig*/, ns2ms(systemTime() - startTime));
         } else if (rc == DEAD_OBJECT) {
             // DEAD_OBJECT can be returned if either the consumer surface is
             // abandoned, or the HAL has died.
@@ -2394,6 +2584,9 @@ bool Camera3Device::reconfigureCamera(const CameraMetadata& sessionParams, int c
     } else {
         ALOGE("%s: Failed to pause streaming: %d", __FUNCTION__, rc);
     }
+
+    CameraServiceProxyWrapper::logStreamConfigured(mId, mOperatingMode, true /*internalReconfig*/,
+        ns2ms(systemTime() - startTime));
 
     if (markClientActive) {
         mStatusTracker->markComponentActive(clientStatusId);
@@ -2418,16 +2611,14 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
     }
 
     bool isConstrainedHighSpeed =
-            CAMERA_STREAM_CONFIGURATION_CONSTRAINED_HIGH_SPEED_MODE == operatingMode;
+            static_cast<int>(StreamConfigurationMode::CONSTRAINED_HIGH_SPEED_MODE) ==
+            operatingMode;
 
     if (mOperatingMode != operatingMode) {
         mNeedConfig = true;
         mIsConstrainedHighSpeedConfiguration = isConstrainedHighSpeed;
         mOperatingMode = operatingMode;
     }
-
-    // Reset min expected duration when session is reconfigured.
-    mMinExpectedDuration = 0;
 
     // In case called from configureStreams, abort queued input buffers not belonging to
     // any pending requests.
@@ -2465,9 +2656,6 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         tryRemoveFakeStreamLocked();
     }
 
-    // Override stream use case based on "adb shell command"
-    overrideStreamUseCaseLocked();
-
     // Start configuring the streams
     ALOGV("%s: Camera %s: Starting stream configuration", __FUNCTION__, mId.string());
 
@@ -2497,7 +2685,7 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
     }
 
     mGroupIdPhysicalCameraMap.clear();
-    mComposerOutput = false;
+    bool composerSurfacePresent = false;
     for (size_t i = 0; i < mOutputStreams.size(); i++) {
 
         // Don't configure bidi streams twice, nor add them twice to the list
@@ -2520,10 +2708,7 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         if (outputStream->format == HAL_PIXEL_FORMAT_BLOB) {
             size_t k = i + ((mInputStream != nullptr) ? 1 : 0); // Input stream if present should
                                                                 // always occupy the initial entry.
-            if ((outputStream->data_space == HAL_DATASPACE_V0_JFIF) ||
-                    (outputStream->data_space ==
-                     static_cast<android_dataspace_t>(
-                         aidl::android::hardware::graphics::common::Dataspace::JPEG_R))) {
+            if (outputStream->data_space == HAL_DATASPACE_V0_JFIF) {
                 bufferSizes[k] = static_cast<uint32_t>(
                         getJpegBufferSize(infoPhysical(String8(outputStream->physical_camera_id)),
                                 outputStream->width, outputStream->height));
@@ -2543,7 +2728,7 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         }
 
         if (outputStream->usage & GraphicBuffer::USAGE_HW_COMPOSER) {
-            mComposerOutput = true;
+            composerSurfacePresent = true;
         }
     }
 
@@ -2553,9 +2738,8 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
     // max_buffers, usage, and priv fields, as well as data_space and format
     // fields for IMPLEMENTATION_DEFINED formats.
 
-    int64_t logId = mCameraServiceProxyWrapper->getCurrentLogIdForCamera(mId);
     const camera_metadata_t *sessionBuffer = sessionParams.getAndLock();
-    res = mInterface->configureStreams(sessionBuffer, &config, bufferSizes, logId);
+    res = mInterface->configureStreams(sessionBuffer, &config, bufferSizes);
     sessionParams.unlock(sessionBuffer);
 
     if (res == BAD_VALUE) {
@@ -2613,7 +2797,7 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         }
     }
 
-    mRequestThread->setComposerSurface(mComposerOutput);
+    mRequestThread->setComposerSurface(composerSurfacePresent);
 
     // Request thread needs to know to avoid using repeat-last-settings protocol
     // across configure_streams() calls
@@ -2668,28 +2852,17 @@ status_t Camera3Device::configureStreamsLocked(int operatingMode,
         mRequestBufferSM.onStreamsConfigured();
     }
 
-    // First call injectCamera() and then run configureStreamsLocked() case:
     // Since the streams configuration of the injection camera is based on the internal camera, we
-    // must wait until the internal camera configure streams before running the injection job to
+    // must wait until the internal camera configure streams before calling injectCamera() to
     // configure the injection streams.
     if (mInjectionMethods->isInjecting()) {
-        ALOGD("%s: Injection camera %s: Start to configure streams.",
+        ALOGV("%s: Injection camera %s: Start to configure streams.",
               __FUNCTION__, mInjectionMethods->getInjectedCamId().string());
         res = mInjectionMethods->injectCamera(config, bufferSizes);
         if (res != OK) {
             ALOGE("Can't finish inject camera process!");
             return res;
         }
-    } else {
-        // First run configureStreamsLocked() and then call injectCamera() case:
-        // If the stream configuration has been completed and camera deive is active, but the
-        // injection camera has not been injected yet, we need to store the stream configuration of
-        // the internal camera (because the stream configuration of the injection camera is based
-        // on the internal camera). When injecting occurs later, this configuration can be used by
-        // the injection camera.
-        ALOGV("%s: The stream configuration is complete and the camera device is active, but the"
-              " injection camera has not been injected yet.", __FUNCTION__);
-        mInjectionMethods->storeInjectionConfig(config, bufferSizes);
     }
 
     return OK;
@@ -2815,9 +2988,9 @@ void Camera3Device::setErrorStateLockedV(const char *fmt, va_list args) {
 
 status_t Camera3Device::registerInFlight(uint32_t frameNumber,
         int32_t numBuffers, CaptureResultExtras resultExtras, bool hasInput,
-        bool hasAppCallback, nsecs_t minExpectedDuration, nsecs_t maxExpectedDuration,
-        bool isFixedFps, const std::set<std::set<String8>>& physicalCameraIds,
-        bool isStillCapture, bool isZslCapture, bool rotateAndCropAuto, bool autoframingAuto,
+        bool hasAppCallback, nsecs_t maxExpectedDuration,
+        const std::set<std::set<String8>>& physicalCameraIds,
+        bool isStillCapture, bool isZslCapture, bool rotateAndCropAuto,
         const std::set<std::string>& cameraIdsWithZoom,
         const SurfaceMap& outputSurfaces, nsecs_t requestTimeNs) {
     ATRACE_CALL();
@@ -2825,9 +2998,8 @@ status_t Camera3Device::registerInFlight(uint32_t frameNumber,
 
     ssize_t res;
     res = mInFlightMap.add(frameNumber, InFlightRequest(numBuffers, resultExtras, hasInput,
-            hasAppCallback, minExpectedDuration, maxExpectedDuration, isFixedFps, physicalCameraIds,
-            isStillCapture, isZslCapture, rotateAndCropAuto, autoframingAuto, cameraIdsWithZoom,
-            requestTimeNs, outputSurfaces));
+            hasAppCallback, maxExpectedDuration, physicalCameraIds, isStillCapture, isZslCapture,
+            rotateAndCropAuto, cameraIdsWithZoom, requestTimeNs, outputSurfaces));
     if (res < 0) return res;
 
     if (mInFlightMap.size() == 1) {
@@ -2916,15 +3088,713 @@ CameraMetadata Camera3Device::getLatestRequestLocked() {
 
 void Camera3Device::monitorMetadata(TagMonitor::eventSource source,
         int64_t frameNumber, nsecs_t timestamp, const CameraMetadata& metadata,
-        const std::unordered_map<std::string, CameraMetadata>& physicalMetadata,
-        const camera_stream_buffer_t *outputBuffers, uint32_t numOutputBuffers,
-        int32_t inputStreamId) {
+        const std::unordered_map<std::string, CameraMetadata>& physicalMetadata) {
 
     mTagMonitor.monitorMetadata(source, frameNumber, timestamp, metadata,
-            physicalMetadata, outputBuffers, numOutputBuffers, inputStreamId);
+            physicalMetadata);
 }
 
-void Camera3Device::cleanupNativeHandles(
+/**
+ * HalInterface inner class methods
+ */
+
+Camera3Device::HalInterface::HalInterface(
+            sp<ICameraDeviceSession> &session,
+            std::shared_ptr<RequestMetadataQueue> queue,
+            bool useHalBufManager, bool supportOfflineProcessing) :
+        mHidlSession(session),
+        mRequestMetadataQueue(queue),
+        mUseHalBufManager(useHalBufManager),
+        mIsReconfigurationQuerySupported(true),
+        mSupportOfflineProcessing(supportOfflineProcessing) {
+    // Check with hardware service manager if we can downcast these interfaces
+    // Somewhat expensive, so cache the results at startup
+    auto castResult_3_7 = device::V3_7::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_7.isOk()) {
+        mHidlSession_3_7 = castResult_3_7;
+    }
+    auto castResult_3_6 = device::V3_6::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_6.isOk()) {
+        mHidlSession_3_6 = castResult_3_6;
+    }
+    auto castResult_3_5 = device::V3_5::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_5.isOk()) {
+        mHidlSession_3_5 = castResult_3_5;
+    }
+    auto castResult_3_4 = device::V3_4::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_4.isOk()) {
+        mHidlSession_3_4 = castResult_3_4;
+    }
+    auto castResult_3_3 = device::V3_3::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_3.isOk()) {
+        mHidlSession_3_3 = castResult_3_3;
+    }
+}
+
+Camera3Device::HalInterface::HalInterface() :
+        mUseHalBufManager(false),
+        mSupportOfflineProcessing(false) {}
+
+Camera3Device::HalInterface::HalInterface(const HalInterface& other) :
+        mHidlSession(other.mHidlSession),
+        mRequestMetadataQueue(other.mRequestMetadataQueue),
+        mUseHalBufManager(other.mUseHalBufManager),
+        mSupportOfflineProcessing(other.mSupportOfflineProcessing) {}
+
+bool Camera3Device::HalInterface::valid() {
+    return (mHidlSession != nullptr);
+}
+
+void Camera3Device::HalInterface::clear() {
+    mHidlSession_3_7.clear();
+    mHidlSession_3_6.clear();
+    mHidlSession_3_5.clear();
+    mHidlSession_3_4.clear();
+    mHidlSession_3_3.clear();
+    mHidlSession.clear();
+}
+
+status_t Camera3Device::HalInterface::constructDefaultRequestSettings(
+        camera_request_template_t templateId,
+        /*out*/ camera_metadata_t **requestTemplate) {
+    ATRACE_NAME("CameraHal::constructDefaultRequestSettings");
+    if (!valid()) return INVALID_OPERATION;
+    status_t res = OK;
+
+    common::V1_0::Status status;
+
+    auto requestCallback = [&status, &requestTemplate]
+            (common::V1_0::Status s, const device::V3_2::CameraMetadata& request) {
+            status = s;
+            if (status == common::V1_0::Status::OK) {
+                const camera_metadata *r =
+                        reinterpret_cast<const camera_metadata_t*>(request.data());
+                size_t expectedSize = request.size();
+                int ret = validate_camera_metadata_structure(r, &expectedSize);
+                if (ret == OK || ret == CAMERA_METADATA_VALIDATION_SHIFTED) {
+                    *requestTemplate = clone_camera_metadata(r);
+                    if (*requestTemplate == nullptr) {
+                        ALOGE("%s: Unable to clone camera metadata received from HAL",
+                                __FUNCTION__);
+                        status = common::V1_0::Status::INTERNAL_ERROR;
+                    }
+                } else {
+                    ALOGE("%s: Malformed camera metadata received from HAL", __FUNCTION__);
+                    status = common::V1_0::Status::INTERNAL_ERROR;
+                }
+            }
+        };
+    hardware::Return<void> err;
+    RequestTemplate id;
+    switch (templateId) {
+        case CAMERA_TEMPLATE_PREVIEW:
+            id = RequestTemplate::PREVIEW;
+            break;
+        case CAMERA_TEMPLATE_STILL_CAPTURE:
+            id = RequestTemplate::STILL_CAPTURE;
+            break;
+        case CAMERA_TEMPLATE_VIDEO_RECORD:
+            id = RequestTemplate::VIDEO_RECORD;
+            break;
+        case CAMERA_TEMPLATE_VIDEO_SNAPSHOT:
+            id = RequestTemplate::VIDEO_SNAPSHOT;
+            break;
+        case CAMERA_TEMPLATE_ZERO_SHUTTER_LAG:
+            id = RequestTemplate::ZERO_SHUTTER_LAG;
+            break;
+        case CAMERA_TEMPLATE_MANUAL:
+            id = RequestTemplate::MANUAL;
+            break;
+        default:
+            // Unknown template ID, or this HAL is too old to support it
+            return BAD_VALUE;
+    }
+    err = mHidlSession->constructDefaultRequestSettings(id, requestCallback);
+
+    if (!err.isOk()) {
+        ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+        res = DEAD_OBJECT;
+    } else {
+        res = CameraProviderManager::mapToStatusT(status);
+    }
+
+    return res;
+}
+
+bool Camera3Device::HalInterface::isReconfigurationRequired(CameraMetadata& oldSessionParams,
+        CameraMetadata& newSessionParams) {
+    // We do reconfiguration by default;
+    bool ret = true;
+    if ((mHidlSession_3_5 != nullptr) && mIsReconfigurationQuerySupported) {
+        android::hardware::hidl_vec<uint8_t> oldParams, newParams;
+        camera_metadata_t* oldSessioMeta = const_cast<camera_metadata_t*>(
+                oldSessionParams.getAndLock());
+        camera_metadata_t* newSessioMeta = const_cast<camera_metadata_t*>(
+                newSessionParams.getAndLock());
+        oldParams.setToExternal(reinterpret_cast<uint8_t*>(oldSessioMeta),
+                get_camera_metadata_size(oldSessioMeta));
+        newParams.setToExternal(reinterpret_cast<uint8_t*>(newSessioMeta),
+                get_camera_metadata_size(newSessioMeta));
+        hardware::camera::common::V1_0::Status callStatus;
+        bool required;
+        auto hidlCb = [&callStatus, &required] (hardware::camera::common::V1_0::Status s,
+                bool requiredFlag) {
+            callStatus = s;
+            required = requiredFlag;
+        };
+        auto err = mHidlSession_3_5->isReconfigurationRequired(oldParams, newParams, hidlCb);
+        oldSessionParams.unlock(oldSessioMeta);
+        newSessionParams.unlock(newSessioMeta);
+        if (err.isOk()) {
+            switch (callStatus) {
+                case hardware::camera::common::V1_0::Status::OK:
+                    ret = required;
+                    break;
+                case hardware::camera::common::V1_0::Status::METHOD_NOT_SUPPORTED:
+                    mIsReconfigurationQuerySupported = false;
+                    ret = true;
+                    break;
+                default:
+                    ALOGV("%s: Reconfiguration query failed: %d", __FUNCTION__, callStatus);
+                    ret = true;
+            }
+        } else {
+            ALOGE("%s: Unexpected binder error: %s", __FUNCTION__, err.description().c_str());
+            ret = true;
+        }
+    }
+
+    return ret;
+}
+
+status_t Camera3Device::HalInterface::configureStreams(const camera_metadata_t *sessionParams,
+        camera_stream_configuration *config, const std::vector<uint32_t>& bufferSizes) {
+    ATRACE_NAME("CameraHal::configureStreams");
+    if (!valid()) return INVALID_OPERATION;
+    status_t res = OK;
+
+    if (config->input_is_multi_resolution && mHidlSession_3_7 == nullptr) {
+        ALOGE("%s: Camera device doesn't support multi-resolution input stream", __FUNCTION__);
+        return BAD_VALUE;
+    }
+
+    // Convert stream config to HIDL
+    std::set<int> activeStreams;
+    device::V3_2::StreamConfiguration requestedConfiguration3_2;
+    device::V3_4::StreamConfiguration requestedConfiguration3_4;
+    device::V3_7::StreamConfiguration requestedConfiguration3_7;
+    requestedConfiguration3_2.streams.resize(config->num_streams);
+    requestedConfiguration3_4.streams.resize(config->num_streams);
+    requestedConfiguration3_7.streams.resize(config->num_streams);
+    for (size_t i = 0; i < config->num_streams; i++) {
+        device::V3_2::Stream &dst3_2 = requestedConfiguration3_2.streams[i];
+        device::V3_4::Stream &dst3_4 = requestedConfiguration3_4.streams[i];
+        device::V3_7::Stream &dst3_7 = requestedConfiguration3_7.streams[i];
+        camera3::camera_stream_t *src = config->streams[i];
+
+        Camera3Stream* cam3stream = Camera3Stream::cast(src);
+        cam3stream->setBufferFreedListener(this);
+        int streamId = cam3stream->getId();
+        StreamType streamType;
+        switch (src->stream_type) {
+            case CAMERA_STREAM_OUTPUT:
+                streamType = StreamType::OUTPUT;
+                break;
+            case CAMERA_STREAM_INPUT:
+                streamType = StreamType::INPUT;
+                break;
+            default:
+                ALOGE("%s: Stream %d: Unsupported stream type %d",
+                        __FUNCTION__, streamId, config->streams[i]->stream_type);
+                return BAD_VALUE;
+        }
+        dst3_2.id = streamId;
+        dst3_2.streamType = streamType;
+        dst3_2.width = src->width;
+        dst3_2.height = src->height;
+        dst3_2.usage = mapToConsumerUsage(cam3stream->getUsage());
+        dst3_2.rotation = mapToStreamRotation((camera_stream_rotation_t) src->rotation);
+        // For HidlSession version 3.5 or newer, the format and dataSpace sent
+        // to HAL are original, not the overridden ones.
+        if (mHidlSession_3_5 != nullptr) {
+            dst3_2.format = mapToPixelFormat(cam3stream->isFormatOverridden() ?
+                    cam3stream->getOriginalFormat() : src->format);
+            dst3_2.dataSpace = mapToHidlDataspace(cam3stream->isDataSpaceOverridden() ?
+                    cam3stream->getOriginalDataSpace() : src->data_space);
+        } else {
+            dst3_2.format = mapToPixelFormat(src->format);
+            dst3_2.dataSpace = mapToHidlDataspace(src->data_space);
+        }
+        dst3_4.v3_2 = dst3_2;
+        dst3_4.bufferSize = bufferSizes[i];
+        if (src->physical_camera_id != nullptr) {
+            dst3_4.physicalCameraId = src->physical_camera_id;
+        }
+        dst3_7.v3_4 = dst3_4;
+        dst3_7.groupId = cam3stream->getHalStreamGroupId();
+        dst3_7.sensorPixelModesUsed.resize(src->sensor_pixel_modes_used.size());
+        size_t j = 0;
+        for (int mode : src->sensor_pixel_modes_used) {
+            dst3_7.sensorPixelModesUsed[j++] =
+                    static_cast<CameraMetadataEnumAndroidSensorPixelMode>(mode);
+        }
+        activeStreams.insert(streamId);
+        // Create Buffer ID map if necessary
+        mBufferRecords.tryCreateBufferCache(streamId);
+    }
+    // remove BufferIdMap for deleted streams
+    mBufferRecords.removeInactiveBufferCaches(activeStreams);
+
+    StreamConfigurationMode operationMode;
+    res = mapToStreamConfigurationMode(
+            (camera_stream_configuration_mode_t) config->operation_mode,
+            /*out*/ &operationMode);
+    if (res != OK) {
+        return res;
+    }
+    requestedConfiguration3_2.operationMode = operationMode;
+    requestedConfiguration3_4.operationMode = operationMode;
+    requestedConfiguration3_7.operationMode = operationMode;
+    size_t sessionParamSize = get_camera_metadata_size(sessionParams);
+    requestedConfiguration3_4.sessionParams.setToExternal(
+            reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(sessionParams)),
+            sessionParamSize);
+    requestedConfiguration3_7.operationMode = operationMode;
+    requestedConfiguration3_7.sessionParams.setToExternal(
+            reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(sessionParams)),
+            sessionParamSize);
+
+    // Invoke configureStreams
+    device::V3_3::HalStreamConfiguration finalConfiguration;
+    device::V3_4::HalStreamConfiguration finalConfiguration3_4;
+    device::V3_6::HalStreamConfiguration finalConfiguration3_6;
+    common::V1_0::Status status;
+
+    auto configStream34Cb = [&status, &finalConfiguration3_4]
+            (common::V1_0::Status s, const device::V3_4::HalStreamConfiguration& halConfiguration) {
+                finalConfiguration3_4 = halConfiguration;
+                status = s;
+            };
+
+    auto configStream36Cb = [&status, &finalConfiguration3_6]
+            (common::V1_0::Status s, const device::V3_6::HalStreamConfiguration& halConfiguration) {
+                finalConfiguration3_6 = halConfiguration;
+                status = s;
+            };
+
+    auto postprocConfigStream34 = [&finalConfiguration, &finalConfiguration3_4]
+            (hardware::Return<void>& err) -> status_t {
+                if (!err.isOk()) {
+                    ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+                    return DEAD_OBJECT;
+                }
+                finalConfiguration.streams.resize(finalConfiguration3_4.streams.size());
+                for (size_t i = 0; i < finalConfiguration3_4.streams.size(); i++) {
+                    finalConfiguration.streams[i] = finalConfiguration3_4.streams[i].v3_3;
+                }
+                return OK;
+            };
+
+    auto postprocConfigStream36 = [&finalConfiguration, &finalConfiguration3_6]
+            (hardware::Return<void>& err) -> status_t {
+                if (!err.isOk()) {
+                    ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+                    return DEAD_OBJECT;
+                }
+                finalConfiguration.streams.resize(finalConfiguration3_6.streams.size());
+                for (size_t i = 0; i < finalConfiguration3_6.streams.size(); i++) {
+                    finalConfiguration.streams[i] = finalConfiguration3_6.streams[i].v3_4.v3_3;
+                }
+                return OK;
+            };
+
+    // See which version of HAL we have
+    if (mHidlSession_3_7 != nullptr) {
+        ALOGV("%s: v3.7 device found", __FUNCTION__);
+        requestedConfiguration3_7.streamConfigCounter = mNextStreamConfigCounter++;
+        requestedConfiguration3_7.multiResolutionInputImage = config->input_is_multi_resolution;
+        auto err = mHidlSession_3_7->configureStreams_3_7(
+                requestedConfiguration3_7, configStream36Cb);
+        res = postprocConfigStream36(err);
+        if (res != OK) {
+            return res;
+        }
+    } else if (mHidlSession_3_6 != nullptr) {
+        ALOGV("%s: v3.6 device found", __FUNCTION__);
+        device::V3_5::StreamConfiguration requestedConfiguration3_5;
+        requestedConfiguration3_5.v3_4 = requestedConfiguration3_4;
+        requestedConfiguration3_5.streamConfigCounter = mNextStreamConfigCounter++;
+        auto err = mHidlSession_3_6->configureStreams_3_6(
+                requestedConfiguration3_5, configStream36Cb);
+        res = postprocConfigStream36(err);
+        if (res != OK) {
+            return res;
+        }
+    } else if (mHidlSession_3_5 != nullptr) {
+        ALOGV("%s: v3.5 device found", __FUNCTION__);
+        device::V3_5::StreamConfiguration requestedConfiguration3_5;
+        requestedConfiguration3_5.v3_4 = requestedConfiguration3_4;
+        requestedConfiguration3_5.streamConfigCounter = mNextStreamConfigCounter++;
+        auto err = mHidlSession_3_5->configureStreams_3_5(
+                requestedConfiguration3_5, configStream34Cb);
+        res = postprocConfigStream34(err);
+        if (res != OK) {
+            return res;
+        }
+    } else if (mHidlSession_3_4 != nullptr) {
+        // We do; use v3.4 for the call
+        ALOGV("%s: v3.4 device found", __FUNCTION__);
+        auto err = mHidlSession_3_4->configureStreams_3_4(
+                requestedConfiguration3_4, configStream34Cb);
+        res = postprocConfigStream34(err);
+        if (res != OK) {
+            return res;
+        }
+    } else if (mHidlSession_3_3 != nullptr) {
+        // We do; use v3.3 for the call
+        ALOGV("%s: v3.3 device found", __FUNCTION__);
+        auto err = mHidlSession_3_3->configureStreams_3_3(requestedConfiguration3_2,
+            [&status, &finalConfiguration]
+            (common::V1_0::Status s, const device::V3_3::HalStreamConfiguration& halConfiguration) {
+                finalConfiguration = halConfiguration;
+                status = s;
+            });
+        if (!err.isOk()) {
+            ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+            return DEAD_OBJECT;
+        }
+    } else {
+        // We don't; use v3.2 call and construct a v3.3 HalStreamConfiguration
+        ALOGV("%s: v3.2 device found", __FUNCTION__);
+        HalStreamConfiguration finalConfiguration_3_2;
+        auto err = mHidlSession->configureStreams(requestedConfiguration3_2,
+                [&status, &finalConfiguration_3_2]
+                (common::V1_0::Status s, const HalStreamConfiguration& halConfiguration) {
+                    finalConfiguration_3_2 = halConfiguration;
+                    status = s;
+                });
+        if (!err.isOk()) {
+            ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+            return DEAD_OBJECT;
+        }
+        finalConfiguration.streams.resize(finalConfiguration_3_2.streams.size());
+        for (size_t i = 0; i < finalConfiguration_3_2.streams.size(); i++) {
+            finalConfiguration.streams[i].v3_2 = finalConfiguration_3_2.streams[i];
+            finalConfiguration.streams[i].overrideDataSpace =
+                    requestedConfiguration3_2.streams[i].dataSpace;
+        }
+    }
+
+    if (status != common::V1_0::Status::OK ) {
+        return CameraProviderManager::mapToStatusT(status);
+    }
+
+    // And convert output stream configuration from HIDL
+
+    for (size_t i = 0; i < config->num_streams; i++) {
+        camera3::camera_stream_t *dst = config->streams[i];
+        int streamId = Camera3Stream::cast(dst)->getId();
+
+        // Start scan at i, with the assumption that the stream order matches
+        size_t realIdx = i;
+        bool found = false;
+        size_t halStreamCount = finalConfiguration.streams.size();
+        for (size_t idx = 0; idx < halStreamCount; idx++) {
+            if (finalConfiguration.streams[realIdx].v3_2.id == streamId) {
+                found = true;
+                break;
+            }
+            realIdx = (realIdx >= halStreamCount - 1) ? 0 : realIdx + 1;
+        }
+        if (!found) {
+            ALOGE("%s: Stream %d not found in stream configuration response from HAL",
+                    __FUNCTION__, streamId);
+            return INVALID_OPERATION;
+        }
+        device::V3_3::HalStream &src = finalConfiguration.streams[realIdx];
+        device::V3_6::HalStream &src_36 = finalConfiguration3_6.streams[realIdx];
+
+        Camera3Stream* dstStream = Camera3Stream::cast(dst);
+        int overrideFormat = mapToFrameworkFormat(src.v3_2.overrideFormat);
+        android_dataspace overrideDataSpace = mapToFrameworkDataspace(src.overrideDataSpace);
+
+        if (mHidlSession_3_6 != nullptr) {
+            dstStream->setOfflineProcessingSupport(src_36.supportOffline);
+        }
+
+        if (dstStream->getOriginalFormat() != HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+            dstStream->setFormatOverride(false);
+            dstStream->setDataSpaceOverride(false);
+            if (dst->format != overrideFormat) {
+                ALOGE("%s: Stream %d: Format override not allowed for format 0x%x", __FUNCTION__,
+                        streamId, dst->format);
+            }
+            if (dst->data_space != overrideDataSpace) {
+                ALOGE("%s: Stream %d: DataSpace override not allowed for format 0x%x", __FUNCTION__,
+                        streamId, dst->format);
+            }
+        } else {
+            bool needFormatOverride =
+                    requestedConfiguration3_2.streams[i].format != src.v3_2.overrideFormat;
+            bool needDataspaceOverride =
+                    requestedConfiguration3_2.streams[i].dataSpace != src.overrideDataSpace;
+            // Override allowed with IMPLEMENTATION_DEFINED
+            dstStream->setFormatOverride(needFormatOverride);
+            dstStream->setDataSpaceOverride(needDataspaceOverride);
+            dst->format = overrideFormat;
+            dst->data_space = overrideDataSpace;
+        }
+
+        if (dst->stream_type == CAMERA_STREAM_INPUT) {
+            if (src.v3_2.producerUsage != 0) {
+                ALOGE("%s: Stream %d: INPUT streams must have 0 for producer usage",
+                        __FUNCTION__, streamId);
+                return INVALID_OPERATION;
+            }
+            dstStream->setUsage(
+                    mapConsumerToFrameworkUsage(src.v3_2.consumerUsage));
+        } else {
+            // OUTPUT
+            if (src.v3_2.consumerUsage != 0) {
+                ALOGE("%s: Stream %d: OUTPUT streams must have 0 for consumer usage",
+                        __FUNCTION__, streamId);
+                return INVALID_OPERATION;
+            }
+            dstStream->setUsage(
+                    mapProducerToFrameworkUsage(src.v3_2.producerUsage));
+        }
+        dst->max_buffers = src.v3_2.maxBuffers;
+    }
+
+    return res;
+}
+
+status_t Camera3Device::HalInterface::configureInjectedStreams(
+        const camera_metadata_t* sessionParams, camera_stream_configuration* config,
+        const std::vector<uint32_t>& bufferSizes,
+        const CameraMetadata& cameraCharacteristics) {
+    ATRACE_NAME("InjectionCameraHal::configureStreams");
+    if (!valid()) return INVALID_OPERATION;
+    status_t res = OK;
+
+    if (config->input_is_multi_resolution) {
+        ALOGE("%s: Injection camera device doesn't support multi-resolution input "
+                "stream", __FUNCTION__);
+        return BAD_VALUE;
+    }
+
+    // Convert stream config to HIDL
+    std::set<int> activeStreams;
+    device::V3_2::StreamConfiguration requestedConfiguration3_2;
+    device::V3_4::StreamConfiguration requestedConfiguration3_4;
+    device::V3_7::StreamConfiguration requestedConfiguration3_7;
+    requestedConfiguration3_2.streams.resize(config->num_streams);
+    requestedConfiguration3_4.streams.resize(config->num_streams);
+    requestedConfiguration3_7.streams.resize(config->num_streams);
+    for (size_t i = 0; i < config->num_streams; i++) {
+        device::V3_2::Stream& dst3_2 = requestedConfiguration3_2.streams[i];
+        device::V3_4::Stream& dst3_4 = requestedConfiguration3_4.streams[i];
+        device::V3_7::Stream& dst3_7 = requestedConfiguration3_7.streams[i];
+        camera3::camera_stream_t* src = config->streams[i];
+
+        Camera3Stream* cam3stream = Camera3Stream::cast(src);
+        cam3stream->setBufferFreedListener(this);
+        int streamId = cam3stream->getId();
+        StreamType streamType;
+        switch (src->stream_type) {
+            case CAMERA_STREAM_OUTPUT:
+                streamType = StreamType::OUTPUT;
+                break;
+            case CAMERA_STREAM_INPUT:
+                streamType = StreamType::INPUT;
+                break;
+            default:
+                ALOGE("%s: Stream %d: Unsupported stream type %d", __FUNCTION__,
+                        streamId, config->streams[i]->stream_type);
+            return BAD_VALUE;
+        }
+        dst3_2.id = streamId;
+        dst3_2.streamType = streamType;
+        dst3_2.width = src->width;
+        dst3_2.height = src->height;
+        dst3_2.usage = mapToConsumerUsage(cam3stream->getUsage());
+        dst3_2.rotation =
+                mapToStreamRotation((camera_stream_rotation_t)src->rotation);
+        // For HidlSession version 3.5 or newer, the format and dataSpace sent
+        // to HAL are original, not the overridden ones.
+        if (mHidlSession_3_5 != nullptr) {
+            dst3_2.format = mapToPixelFormat(cam3stream->isFormatOverridden()
+                                            ? cam3stream->getOriginalFormat()
+                                            : src->format);
+            dst3_2.dataSpace =
+                    mapToHidlDataspace(cam3stream->isDataSpaceOverridden()
+                                    ? cam3stream->getOriginalDataSpace()
+                                    : src->data_space);
+        } else {
+            dst3_2.format = mapToPixelFormat(src->format);
+            dst3_2.dataSpace = mapToHidlDataspace(src->data_space);
+        }
+        dst3_4.v3_2 = dst3_2;
+        dst3_4.bufferSize = bufferSizes[i];
+        if (src->physical_camera_id != nullptr) {
+            dst3_4.physicalCameraId = src->physical_camera_id;
+        }
+        dst3_7.v3_4 = dst3_4;
+        dst3_7.groupId = cam3stream->getHalStreamGroupId();
+        dst3_7.sensorPixelModesUsed.resize(src->sensor_pixel_modes_used.size());
+        size_t j = 0;
+        for (int mode : src->sensor_pixel_modes_used) {
+            dst3_7.sensorPixelModesUsed[j++] =
+                    static_cast<CameraMetadataEnumAndroidSensorPixelMode>(mode);
+        }
+        activeStreams.insert(streamId);
+        // Create Buffer ID map if necessary
+        mBufferRecords.tryCreateBufferCache(streamId);
+    }
+    // remove BufferIdMap for deleted streams
+    mBufferRecords.removeInactiveBufferCaches(activeStreams);
+
+    StreamConfigurationMode operationMode;
+    res = mapToStreamConfigurationMode(
+            (camera_stream_configuration_mode_t)config->operation_mode,
+            /*out*/ &operationMode);
+    if (res != OK) {
+        return res;
+    }
+    requestedConfiguration3_7.operationMode = operationMode;
+    size_t sessionParamSize = get_camera_metadata_size(sessionParams);
+    requestedConfiguration3_7.operationMode = operationMode;
+    requestedConfiguration3_7.sessionParams.setToExternal(
+            reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(sessionParams)),
+            sessionParamSize);
+
+    // See which version of HAL we have
+    if (mHidlSession_3_7 != nullptr) {
+        requestedConfiguration3_7.streamConfigCounter = mNextStreamConfigCounter++;
+        requestedConfiguration3_7.multiResolutionInputImage =
+                config->input_is_multi_resolution;
+
+        const camera_metadata_t* rawMetadata = cameraCharacteristics.getAndLock();
+        ::android::hardware::camera::device::V3_2::CameraMetadata hidlChars = {};
+        hidlChars.setToExternal(
+                reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(rawMetadata)),
+                get_camera_metadata_size(rawMetadata));
+        cameraCharacteristics.unlock(rawMetadata);
+
+        sp<hardware::camera::device::V3_7::ICameraInjectionSession>
+                hidlInjectionSession_3_7;
+        auto castInjectionResult_3_7 =
+                device::V3_7::ICameraInjectionSession::castFrom(mHidlSession_3_7);
+        if (castInjectionResult_3_7.isOk()) {
+            hidlInjectionSession_3_7 = castInjectionResult_3_7;
+        } else {
+            ALOGE("%s: Transaction error: %s", __FUNCTION__,
+                    castInjectionResult_3_7.description().c_str());
+            return DEAD_OBJECT;
+        }
+
+        auto err = hidlInjectionSession_3_7->configureInjectionStreams(
+                requestedConfiguration3_7, hidlChars);
+        if (!err.isOk()) {
+            ALOGE("%s: Transaction error: %s", __FUNCTION__,
+                    err.description().c_str());
+            return DEAD_OBJECT;
+        }
+    } else {
+        ALOGE("%s: mHidlSession_3_7 does not exist, the lowest version of injection "
+                "session is 3.7", __FUNCTION__);
+        return DEAD_OBJECT;
+    }
+
+    return res;
+}
+
+status_t Camera3Device::HalInterface::wrapAsHidlRequest(camera_capture_request_t* request,
+        /*out*/device::V3_2::CaptureRequest* captureRequest,
+        /*out*/std::vector<native_handle_t*>* handlesCreated,
+        /*out*/std::vector<std::pair<int32_t, int32_t>>* inflightBuffers) {
+    ATRACE_CALL();
+    if (captureRequest == nullptr || handlesCreated == nullptr || inflightBuffers == nullptr) {
+        ALOGE("%s: captureRequest (%p), handlesCreated (%p), and inflightBuffers(%p) "
+                "must not be null", __FUNCTION__, captureRequest, handlesCreated, inflightBuffers);
+        return BAD_VALUE;
+    }
+
+    captureRequest->frameNumber = request->frame_number;
+
+    captureRequest->fmqSettingsSize = 0;
+
+    {
+        if (request->input_buffer != nullptr) {
+            int32_t streamId = Camera3Stream::cast(request->input_buffer->stream)->getId();
+            buffer_handle_t buf = *(request->input_buffer->buffer);
+            auto pair = getBufferId(buf, streamId);
+            bool isNewBuffer = pair.first;
+            uint64_t bufferId = pair.second;
+            captureRequest->inputBuffer.streamId = streamId;
+            captureRequest->inputBuffer.bufferId = bufferId;
+            captureRequest->inputBuffer.buffer = (isNewBuffer) ? buf : nullptr;
+            captureRequest->inputBuffer.status = BufferStatus::OK;
+            native_handle_t *acquireFence = nullptr;
+            if (request->input_buffer->acquire_fence != -1) {
+                acquireFence = native_handle_create(1,0);
+                acquireFence->data[0] = request->input_buffer->acquire_fence;
+                handlesCreated->push_back(acquireFence);
+            }
+            captureRequest->inputBuffer.acquireFence = acquireFence;
+            captureRequest->inputBuffer.releaseFence = nullptr;
+
+            mBufferRecords.pushInflightBuffer(captureRequest->frameNumber, streamId,
+                    request->input_buffer->buffer);
+            inflightBuffers->push_back(std::make_pair(captureRequest->frameNumber, streamId));
+        } else {
+            captureRequest->inputBuffer.streamId = -1;
+            captureRequest->inputBuffer.bufferId = BUFFER_ID_NO_BUFFER;
+        }
+
+        captureRequest->outputBuffers.resize(request->num_output_buffers);
+        for (size_t i = 0; i < request->num_output_buffers; i++) {
+            const camera_stream_buffer_t *src = request->output_buffers + i;
+            StreamBuffer &dst = captureRequest->outputBuffers[i];
+            int32_t streamId = Camera3Stream::cast(src->stream)->getId();
+            if (src->buffer != nullptr) {
+                buffer_handle_t buf = *(src->buffer);
+                auto pair = getBufferId(buf, streamId);
+                bool isNewBuffer = pair.first;
+                dst.bufferId = pair.second;
+                dst.buffer = isNewBuffer ? buf : nullptr;
+                native_handle_t *acquireFence = nullptr;
+                if (src->acquire_fence != -1) {
+                    acquireFence = native_handle_create(1,0);
+                    acquireFence->data[0] = src->acquire_fence;
+                    handlesCreated->push_back(acquireFence);
+                }
+                dst.acquireFence = acquireFence;
+            } else if (mUseHalBufManager) {
+                // HAL buffer management path
+                dst.bufferId = BUFFER_ID_NO_BUFFER;
+                dst.buffer = nullptr;
+                dst.acquireFence = nullptr;
+            } else {
+                ALOGE("%s: cannot send a null buffer in capture request!", __FUNCTION__);
+                return BAD_VALUE;
+            }
+            dst.streamId = streamId;
+            dst.status = BufferStatus::OK;
+            dst.releaseFence = nullptr;
+
+            // Output buffers are empty when using HAL buffer manager
+            if (!mUseHalBufManager) {
+                mBufferRecords.pushInflightBuffer(
+                        captureRequest->frameNumber, streamId, src->buffer);
+                inflightBuffers->push_back(std::make_pair(captureRequest->frameNumber, streamId));
+            }
+        }
+    }
+    return OK;
+}
+
+void Camera3Device::HalInterface::cleanupNativeHandles(
         std::vector<native_handle_t*> *handles, bool closeFd) {
     if (handles == nullptr) {
         return;
@@ -2941,9 +3811,301 @@ void Camera3Device::cleanupNativeHandles(
     return;
 }
 
-/**
- * HalInterface inner class methods
- */
+status_t Camera3Device::HalInterface::processBatchCaptureRequests(
+        std::vector<camera_capture_request_t*>& requests,/*out*/uint32_t* numRequestProcessed) {
+    ATRACE_NAME("CameraHal::processBatchCaptureRequests");
+    if (!valid()) return INVALID_OPERATION;
+
+    sp<device::V3_4::ICameraDeviceSession> hidlSession_3_4;
+    sp<device::V3_7::ICameraDeviceSession> hidlSession_3_7;
+    auto castResult_3_7 = device::V3_7::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_7.isOk()) {
+        hidlSession_3_7 = castResult_3_7;
+    }
+    auto castResult_3_4 = device::V3_4::ICameraDeviceSession::castFrom(mHidlSession);
+    if (castResult_3_4.isOk()) {
+        hidlSession_3_4 = castResult_3_4;
+    }
+
+    hardware::hidl_vec<device::V3_2::CaptureRequest> captureRequests;
+    hardware::hidl_vec<device::V3_4::CaptureRequest> captureRequests_3_4;
+    hardware::hidl_vec<device::V3_7::CaptureRequest> captureRequests_3_7;
+    size_t batchSize = requests.size();
+    if (hidlSession_3_7 != nullptr) {
+        captureRequests_3_7.resize(batchSize);
+    } else if (hidlSession_3_4 != nullptr) {
+        captureRequests_3_4.resize(batchSize);
+    } else {
+        captureRequests.resize(batchSize);
+    }
+    std::vector<native_handle_t*> handlesCreated;
+    std::vector<std::pair<int32_t, int32_t>> inflightBuffers;
+
+    status_t res = OK;
+    for (size_t i = 0; i < batchSize; i++) {
+        if (hidlSession_3_7 != nullptr) {
+            res = wrapAsHidlRequest(requests[i], /*out*/&captureRequests_3_7[i].v3_4.v3_2,
+                    /*out*/&handlesCreated, /*out*/&inflightBuffers);
+        } else if (hidlSession_3_4 != nullptr) {
+            res = wrapAsHidlRequest(requests[i], /*out*/&captureRequests_3_4[i].v3_2,
+                    /*out*/&handlesCreated, /*out*/&inflightBuffers);
+        } else {
+            res = wrapAsHidlRequest(requests[i], /*out*/&captureRequests[i],
+                    /*out*/&handlesCreated, /*out*/&inflightBuffers);
+        }
+        if (res != OK) {
+            mBufferRecords.popInflightBuffers(inflightBuffers);
+            cleanupNativeHandles(&handlesCreated);
+            return res;
+        }
+    }
+
+    std::vector<device::V3_2::BufferCache> cachesToRemove;
+    {
+        std::lock_guard<std::mutex> lock(mFreedBuffersLock);
+        for (auto& pair : mFreedBuffers) {
+            // The stream might have been removed since onBufferFreed
+            if (mBufferRecords.isStreamCached(pair.first)) {
+                cachesToRemove.push_back({pair.first, pair.second});
+            }
+        }
+        mFreedBuffers.clear();
+    }
+
+    common::V1_0::Status status = common::V1_0::Status::INTERNAL_ERROR;
+    *numRequestProcessed = 0;
+
+    // Write metadata to FMQ.
+    for (size_t i = 0; i < batchSize; i++) {
+        camera_capture_request_t* request = requests[i];
+        device::V3_2::CaptureRequest* captureRequest;
+        if (hidlSession_3_7 != nullptr) {
+            captureRequest = &captureRequests_3_7[i].v3_4.v3_2;
+        } else if (hidlSession_3_4 != nullptr) {
+            captureRequest = &captureRequests_3_4[i].v3_2;
+        } else {
+            captureRequest = &captureRequests[i];
+        }
+
+        if (request->settings != nullptr) {
+            size_t settingsSize = get_camera_metadata_size(request->settings);
+            if (mRequestMetadataQueue != nullptr && mRequestMetadataQueue->write(
+                    reinterpret_cast<const uint8_t*>(request->settings), settingsSize)) {
+                captureRequest->settings.resize(0);
+                captureRequest->fmqSettingsSize = settingsSize;
+            } else {
+                if (mRequestMetadataQueue != nullptr) {
+                    ALOGW("%s: couldn't utilize fmq, fallback to hwbinder", __FUNCTION__);
+                }
+                captureRequest->settings.setToExternal(
+                        reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(request->settings)),
+                        get_camera_metadata_size(request->settings));
+                captureRequest->fmqSettingsSize = 0u;
+            }
+        } else {
+            // A null request settings maps to a size-0 CameraMetadata
+            captureRequest->settings.resize(0);
+            captureRequest->fmqSettingsSize = 0u;
+        }
+
+        // hidl session 3.7 specific handling.
+        if (hidlSession_3_7 != nullptr) {
+            captureRequests_3_7[i].inputWidth = request->input_width;
+            captureRequests_3_7[i].inputHeight = request->input_height;
+        }
+
+        // hidl session 3.7 and 3.4 specific handling.
+        if (hidlSession_3_7 != nullptr || hidlSession_3_4 != nullptr) {
+            hardware::hidl_vec<device::V3_4::PhysicalCameraSetting>& physicalCameraSettings =
+                    (hidlSession_3_7 != nullptr) ?
+                    captureRequests_3_7[i].v3_4.physicalCameraSettings :
+                    captureRequests_3_4[i].physicalCameraSettings;
+            physicalCameraSettings.resize(request->num_physcam_settings);
+            for (size_t j = 0; j < request->num_physcam_settings; j++) {
+                if (request->physcam_settings != nullptr) {
+                    size_t settingsSize = get_camera_metadata_size(request->physcam_settings[j]);
+                    if (mRequestMetadataQueue != nullptr && mRequestMetadataQueue->write(
+                                reinterpret_cast<const uint8_t*>(request->physcam_settings[j]),
+                                settingsSize)) {
+                        physicalCameraSettings[j].settings.resize(0);
+                        physicalCameraSettings[j].fmqSettingsSize = settingsSize;
+                    } else {
+                        if (mRequestMetadataQueue != nullptr) {
+                            ALOGW("%s: couldn't utilize fmq, fallback to hwbinder", __FUNCTION__);
+                        }
+                        physicalCameraSettings[j].settings.setToExternal(
+                                reinterpret_cast<uint8_t*>(const_cast<camera_metadata_t*>(
+                                        request->physcam_settings[j])),
+                                get_camera_metadata_size(request->physcam_settings[j]));
+                        physicalCameraSettings[j].fmqSettingsSize = 0u;
+                    }
+                } else {
+                    physicalCameraSettings[j].fmqSettingsSize = 0u;
+                    physicalCameraSettings[j].settings.resize(0);
+                }
+                physicalCameraSettings[j].physicalCameraId = request->physcam_id[j];
+            }
+        }
+    }
+
+    hardware::details::return_status err;
+    auto resultCallback =
+        [&status, &numRequestProcessed] (auto s, uint32_t n) {
+                status = s;
+                *numRequestProcessed = n;
+        };
+    if (hidlSession_3_7 != nullptr) {
+        err = hidlSession_3_7->processCaptureRequest_3_7(captureRequests_3_7, cachesToRemove,
+                                                         resultCallback);
+    } else if (hidlSession_3_4 != nullptr) {
+        err = hidlSession_3_4->processCaptureRequest_3_4(captureRequests_3_4, cachesToRemove,
+                                                         resultCallback);
+    } else {
+        err = mHidlSession->processCaptureRequest(captureRequests, cachesToRemove,
+                                                  resultCallback);
+    }
+    if (!err.isOk()) {
+        ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+        status = common::V1_0::Status::CAMERA_DISCONNECTED;
+    }
+
+    if (status == common::V1_0::Status::OK && *numRequestProcessed != batchSize) {
+        ALOGE("%s: processCaptureRequest returns OK but processed %d/%zu requests",
+                __FUNCTION__, *numRequestProcessed, batchSize);
+        status = common::V1_0::Status::INTERNAL_ERROR;
+    }
+
+    res = CameraProviderManager::mapToStatusT(status);
+    if (res == OK) {
+        if (mHidlSession->isRemote()) {
+            // Only close acquire fence FDs when the HIDL transaction succeeds (so the FDs have been
+            // sent to camera HAL processes)
+            cleanupNativeHandles(&handlesCreated, /*closeFd*/true);
+        } else {
+            // In passthrough mode the FDs are now owned by HAL
+            cleanupNativeHandles(&handlesCreated);
+        }
+    } else {
+        mBufferRecords.popInflightBuffers(inflightBuffers);
+        cleanupNativeHandles(&handlesCreated);
+    }
+    return res;
+}
+
+status_t Camera3Device::HalInterface::flush() {
+    ATRACE_NAME("CameraHal::flush");
+    if (!valid()) return INVALID_OPERATION;
+    status_t res = OK;
+
+    auto err = mHidlSession->flush();
+    if (!err.isOk()) {
+        ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+        res = DEAD_OBJECT;
+    } else {
+        res = CameraProviderManager::mapToStatusT(err);
+    }
+
+    return res;
+}
+
+status_t Camera3Device::HalInterface::dump(int /*fd*/) {
+    ATRACE_NAME("CameraHal::dump");
+    if (!valid()) return INVALID_OPERATION;
+
+    // Handled by CameraProviderManager::dump
+
+    return OK;
+}
+
+status_t Camera3Device::HalInterface::close() {
+    ATRACE_NAME("CameraHal::close()");
+    if (!valid()) return INVALID_OPERATION;
+    status_t res = OK;
+
+    auto err = mHidlSession->close();
+    // Interface will be dead shortly anyway, so don't log errors
+    if (!err.isOk()) {
+        res = DEAD_OBJECT;
+    }
+
+    return res;
+}
+
+void Camera3Device::HalInterface::signalPipelineDrain(const std::vector<int>& streamIds) {
+    ATRACE_NAME("CameraHal::signalPipelineDrain");
+    if (!valid() || mHidlSession_3_5 == nullptr) {
+        ALOGE("%s called on invalid camera!", __FUNCTION__);
+        return;
+    }
+
+    auto err = mHidlSession_3_5->signalStreamFlush(streamIds, mNextStreamConfigCounter - 1);
+    if (!err.isOk()) {
+        ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+        return;
+    }
+}
+
+status_t Camera3Device::HalInterface::switchToOffline(
+        const std::vector<int32_t>& streamsToKeep,
+        /*out*/hardware::camera::device::V3_6::CameraOfflineSessionInfo* offlineSessionInfo,
+        /*out*/sp<hardware::camera::device::V3_6::ICameraOfflineSession>* offlineSession,
+        /*out*/camera3::BufferRecords* bufferRecords) {
+    ATRACE_NAME("CameraHal::switchToOffline");
+    if (!valid() || mHidlSession_3_6 == nullptr) {
+        ALOGE("%s called on invalid camera!", __FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    if (offlineSessionInfo == nullptr || offlineSession == nullptr || bufferRecords == nullptr) {
+        ALOGE("%s: output arguments must not be null!", __FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    common::V1_0::Status status = common::V1_0::Status::INTERNAL_ERROR;
+    auto resultCallback =
+        [&status, &offlineSessionInfo, &offlineSession] (auto s, auto info, auto session) {
+                status = s;
+                *offlineSessionInfo = info;
+                *offlineSession = session;
+        };
+    auto err = mHidlSession_3_6->switchToOffline(streamsToKeep, resultCallback);
+
+    if (!err.isOk()) {
+        ALOGE("%s: Transaction error: %s", __FUNCTION__, err.description().c_str());
+        return DEAD_OBJECT;
+    }
+
+    status_t ret = CameraProviderManager::mapToStatusT(status);
+    if (ret != OK) {
+        return ret;
+    }
+
+    // TODO: assert no ongoing requestBuffer/returnBuffer call here
+    // TODO: update RequestBufferStateMachine to block requestBuffer/returnBuffer once HAL
+    //       returns from switchToOffline.
+
+
+    // Validate buffer caches
+    std::vector<int32_t> streams;
+    streams.reserve(offlineSessionInfo->offlineStreams.size());
+    for (auto offlineStream : offlineSessionInfo->offlineStreams) {
+        int32_t id = offlineStream.id;
+        streams.push_back(id);
+        // Verify buffer caches
+        std::vector<uint64_t> bufIds(offlineStream.circulatingBufferIds.begin(),
+                offlineStream.circulatingBufferIds.end());
+        if (!verifyBufferIds(id, bufIds)) {
+            ALOGE("%s: stream ID %d buffer cache records mismatch!", __FUNCTION__, id);
+            return UNKNOWN_ERROR;
+        }
+    }
+
+    // Move buffer records
+    bufferRecords->takeBufferCaches(mBufferRecords, streams);
+    bufferRecords->takeInflightBufferMap(mBufferRecords);
+    bufferRecords->takeRequestedBufferMap(mBufferRecords);
+    return ret;
+}
 
 void Camera3Device::HalInterface::getInflightBufferKeys(
         std::vector<std::pair<int32_t, int32_t>>* out) {
@@ -3016,16 +4178,13 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         sp<StatusTracker> statusTracker,
         sp<HalInterface> interface, const Vector<int32_t>& sessionParamKeys,
         bool useHalBufManager,
-        bool supportCameraMute,
-        bool overrideToPortrait,
-        bool supportSettingsOverride) :
+        bool supportCameraMute) :
         Thread(/*canCallJava*/false),
         mParent(parent),
         mStatusTracker(statusTracker),
         mInterface(interface),
         mListener(nullptr),
         mId(getId(parent)),
-        mRequestClearing(false),
         mFirstRepeating(false),
         mReconfigured(false),
         mDoPause(false),
@@ -3036,11 +4195,9 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         mCurrentAfTriggerId(0),
         mCurrentPreCaptureTriggerId(0),
         mRotateAndCropOverride(ANDROID_SCALER_ROTATE_AND_CROP_NONE),
-        mAutoframingOverride(ANDROID_CONTROL_AUTOFRAMING_OFF),
         mComposerOutput(false),
         mCameraMute(ANDROID_SENSOR_TEST_PATTERN_MODE_OFF),
         mCameraMuteChanged(false),
-        mSettingsOverride(ANDROID_CONTROL_SETTINGS_OVERRIDE_OFF),
         mRepeatingLastFrameNumber(
             hardware::camera2::ICameraDeviceUser::NO_IN_FLIGHT_REPEATING_FRAMES),
         mPrepareVideoStream(false),
@@ -3049,11 +4206,8 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         mSessionParamKeys(sessionParamKeys),
         mLatestSessionParams(sessionParamKeys.size()),
         mUseHalBufManager(useHalBufManager),
-        mSupportCameraMute(supportCameraMute),
-        mOverrideToPortrait(overrideToPortrait),
-        mSupportSettingsOverride(supportSettingsOverride) {
+        mSupportCameraMute(supportCameraMute){
     mStatusId = statusTracker->addComponent("RequestThread");
-    mVndkVersion = property_get_int32("ro.vndk.version", __ANDROID_API_FUTURE__);
 }
 
 Camera3Device::RequestThread::~RequestThread() {}
@@ -3196,22 +4350,11 @@ status_t Camera3Device::RequestThread::clearRepeatingRequests(/*out*/int64_t *la
 
 }
 
-status_t Camera3Device::RequestThread::clearRepeatingRequestsLocked(
-        /*out*/int64_t *lastFrameNumber) {
-    std::vector<int32_t> streamIds;
-    for (const auto& request : mRepeatingRequests) {
-        for (const auto& stream : request->mOutputStreams) {
-            streamIds.push_back(stream->getId());
-        }
-    }
-
+status_t Camera3Device::RequestThread::clearRepeatingRequestsLocked(/*out*/int64_t *lastFrameNumber) {
     mRepeatingRequests.clear();
     if (lastFrameNumber != NULL) {
         *lastFrameNumber = mRepeatingLastFrameNumber;
     }
-
-    mInterface->repeatingRequestEnd(mRepeatingLastFrameNumber, streamIds);
-
     mRepeatingLastFrameNumber = hardware::camera2::ICameraDeviceUser::NO_IN_FLIGHT_REPEATING_FRAMES;
     return OK;
 }
@@ -3221,6 +4364,8 @@ status_t Camera3Device::RequestThread::clear(
     ATRACE_CALL();
     Mutex::Autolock l(mRequestLock);
     ALOGV("RequestThread::%s:", __FUNCTION__);
+
+    mRepeatingRequests.clear();
 
     // Send errors for all requests pending in the request queue, including
     // pending repeating requests
@@ -3259,8 +4404,10 @@ status_t Camera3Device::RequestThread::clear(
 
     Mutex::Autolock al(mTriggerMutex);
     mTriggerMap.clear();
-    clearRepeatingRequestsLocked(lastFrameNumber);
-    mRequestClearing = true;
+    if (lastFrameNumber != NULL) {
+        *lastFrameNumber = mRepeatingLastFrameNumber;
+    }
+    mRepeatingLastFrameNumber = hardware::camera2::ICameraDeviceUser::NO_IN_FLIGHT_REPEATING_FRAMES;
     mRequestSignal.signal();
     return OK;
 }
@@ -3388,18 +4535,13 @@ bool Camera3Device::RequestThread::sendRequestsBatch() {
     return true;
 }
 
-Camera3Device::RequestThread::ExpectedDurationInfo
-        Camera3Device::RequestThread::calculateExpectedDurationRange(
-                const camera_metadata_t *request) {
-    ExpectedDurationInfo expectedDurationInfo = {
-            InFlightRequest::kDefaultMinExpectedDuration,
-            InFlightRequest::kDefaultMaxExpectedDuration,
-            /*isFixedFps*/false};
+nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_metadata_t *request) {
+    nsecs_t maxExpectedDuration = kDefaultExpectedDuration;
     camera_metadata_ro_entry_t e = camera_metadata_ro_entry_t();
     find_camera_metadata_ro_entry(request,
             ANDROID_CONTROL_AE_MODE,
             &e);
-    if (e.count == 0) return expectedDurationInfo;
+    if (e.count == 0) return maxExpectedDuration;
 
     switch (e.data.u8[0]) {
         case ANDROID_CONTROL_AE_MODE_OFF:
@@ -3407,32 +4549,26 @@ Camera3Device::RequestThread::ExpectedDurationInfo
                     ANDROID_SENSOR_EXPOSURE_TIME,
                     &e);
             if (e.count > 0) {
-                expectedDurationInfo.minDuration = e.data.i64[0];
-                expectedDurationInfo.maxDuration = expectedDurationInfo.minDuration;
+                maxExpectedDuration = e.data.i64[0];
             }
             find_camera_metadata_ro_entry(request,
                     ANDROID_SENSOR_FRAME_DURATION,
                     &e);
             if (e.count > 0) {
-                expectedDurationInfo.minDuration =
-                        std::max(e.data.i64[0], expectedDurationInfo.minDuration);
-                expectedDurationInfo.maxDuration = expectedDurationInfo.minDuration;
+                maxExpectedDuration = std::max(e.data.i64[0], maxExpectedDuration);
             }
-            expectedDurationInfo.isFixedFps = false;
             break;
         default:
             find_camera_metadata_ro_entry(request,
                     ANDROID_CONTROL_AE_TARGET_FPS_RANGE,
                     &e);
             if (e.count > 1) {
-                expectedDurationInfo.minDuration = 1e9 / e.data.i32[1];
-                expectedDurationInfo.maxDuration = 1e9 / e.data.i32[0];
+                maxExpectedDuration = 1e9 / e.data.u8[0];
             }
-            expectedDurationInfo.isFixedFps = (e.data.i32[1] == e.data.i32[0]);
             break;
     }
 
-    return expectedDurationInfo;
+    return maxExpectedDuration;
 }
 
 bool Camera3Device::RequestThread::skipHFRTargetFPSUpdate(int32_t tag,
@@ -3464,15 +4600,9 @@ void Camera3Device::RequestThread::updateNextRequest(NextRequest& nextRequest) {
 
         sp<Camera3Device> parent = mParent.promote();
         if (parent != NULL) {
-            int32_t inputStreamId = -1;
-            if (halRequest.input_buffer != nullptr) {
-              inputStreamId = Camera3Stream::cast(halRequest.input_buffer->stream)->getId();
-            }
-
             parent->monitorMetadata(TagMonitor::REQUEST,
                     halRequest.frame_number,
-                    0, mLatestRequest, mLatestPhysicalRequest, halRequest.output_buffers,
-                    halRequest.num_output_buffers, inputStreamId);
+                    0, mLatestRequest, mLatestPhysicalRequest);
         }
     }
 
@@ -3571,17 +4701,6 @@ bool Camera3Device::RequestThread::threadLoop() {
         latestRequestId = NAME_NOT_FOUND;
     }
 
-    for (size_t i = 0; i < mNextRequests.size(); i++) {
-        auto& nextRequest = mNextRequests.editItemAt(i);
-        sp<CaptureRequest> captureRequest = nextRequest.captureRequest;
-        // Do not override rotate&crop for stream configurations that include
-        // SurfaceViews(HW_COMPOSER) output, unless mOverrideToPortrait is set.
-        // The display rotation there will be compensated by NATIVE_WINDOW_TRANSFORM_INVERSE_DISPLAY
-        captureRequest->mRotateAndCropChanged = (mComposerOutput && !mOverrideToPortrait) ? false :
-            overrideAutoRotateAndCrop(captureRequest);
-        captureRequest->mAutoframingChanged = overrideAutoframing(captureRequest);
-    }
-
     // 'mNextRequests' will at this point contain either a set of HFR batched requests
     //  or a single request from streaming or burst. In either case the first element
     //  should contain the latest camera settings that we need to check for any session
@@ -3605,6 +4724,7 @@ bool Camera3Device::RequestThread::threadLoop() {
             if (parent != nullptr) {
                 mReconfigured |= parent->reconfigureCamera(mLatestSessionParams, mStatusId);
             }
+            setPaused(false);
 
             if (mNextRequests[0].captureRequest->mInputStream != nullptr) {
                 mNextRequests[0].captureRequest->mInputStream->restoreConfiguredState();
@@ -3726,16 +4846,18 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
         bool triggersMixedIn = (triggerCount > 0 || mPrevTriggers > 0);
         mPrevTriggers = triggerCount;
 
+        // Do not override rotate&crop for stream configurations that include
+        // SurfaceViews(HW_COMPOSER) output. The display rotation there will be
+        // compensated by NATIVE_WINDOW_TRANSFORM_INVERSE_DISPLAY
+        bool rotateAndCropChanged = mComposerOutput ? false :
+            overrideAutoRotateAndCrop(captureRequest);
         bool testPatternChanged = overrideTestPattern(captureRequest);
-        bool settingsOverrideChanged = overrideSettingsOverride(captureRequest);
 
         // If the request is the same as last, or we had triggers now or last time or
         // changing overrides this time
         bool newRequest =
                 (mPrevRequest != captureRequest || triggersMixedIn ||
-                         captureRequest->mRotateAndCropChanged ||
-                         captureRequest->mAutoframingChanged ||
-                         testPatternChanged || settingsOverrideChanged) &&
+                        rotateAndCropChanged || testPatternChanged) &&
                 // Request settings are all the same within one batch, so only treat the first
                 // request in a batch as new
                 !(batchedRequest && i > 0);
@@ -3850,17 +4972,6 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
                             }
                         }
                         captureRequest->mRotationAndCropUpdated = true;
-                    }
-
-                    for (it = captureRequest->mSettingsList.begin();
-                            it != captureRequest->mSettingsList.end(); it++) {
-                        res = hardware::cameraservice::utils::conversion::aidl::filterVndkKeys(
-                                mVndkVersion, it->metadata, false /*isStatic*/);
-                        if (res != OK) {
-                            SET_ERR("RequestThread: Failed during VNDK filter of capture requests "
-                                    "%d: %s (%d)", halRequest->frame_number, strerror(-res), res);
-                            return INVALID_OPERATION;
-                        }
                     }
                 }
             }
@@ -4069,17 +5180,13 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
                 isZslCapture = true;
             }
         }
-        auto expectedDurationInfo = calculateExpectedDurationRange(settings);
         res = parent->registerInFlight(halRequest->frame_number,
                 totalNumBuffers, captureRequest->mResultExtras,
                 /*hasInput*/halRequest->input_buffer != NULL,
                 hasCallback,
-                expectedDurationInfo.minDuration,
-                expectedDurationInfo.maxDuration,
-                expectedDurationInfo.isFixedFps,
+                calculateMaxExpectedDuration(settings),
                 requestedPhysicalCameras, isStillCapture, isZslCapture,
-                captureRequest->mRotateAndCropAuto, captureRequest->mAutoframingAuto,
-                mPrevCameraIdsWithZoom,
+                captureRequest->mRotateAndCropAuto, mPrevCameraIdsWithZoom,
                 (mUseHalBufManager) ? uniqueSurfaceIdMap :
                                       SurfaceMap{}, captureRequest->mRequestTimeNs);
         ALOGVV("%s: registered in flight requestId = %" PRId32 ", frameNumber = %" PRId64
@@ -4209,19 +5316,46 @@ void Camera3Device::RequestThread::clearPreviousRequest() {
     mPrevRequest.clear();
 }
 
+status_t Camera3Device::RequestThread::switchToOffline(
+        const std::vector<int32_t>& streamsToKeep,
+        /*out*/hardware::camera::device::V3_6::CameraOfflineSessionInfo* offlineSessionInfo,
+        /*out*/sp<hardware::camera::device::V3_6::ICameraOfflineSession>* offlineSession,
+        /*out*/camera3::BufferRecords* bufferRecords) {
+    Mutex::Autolock l(mRequestLock);
+    clearRepeatingRequestsLocked(/*lastFrameNumber*/nullptr);
+
+    // Wait until request thread is fully stopped
+    // TBD: check if request thread is being paused by other APIs (shouldn't be)
+
+    // We could also check for mRepeatingRequests.empty(), but the API interface
+    // is serialized by Camera3Device::mInterfaceLock so no one should be able to submit any
+    // new requests during the call; hence skip that check.
+    bool queueEmpty = mNextRequests.empty() && mRequestQueue.empty();
+    while (!queueEmpty) {
+        status_t res = mRequestSubmittedSignal.waitRelative(mRequestLock, kRequestSubmitTimeout);
+        if (res == TIMED_OUT) {
+            ALOGE("%s: request thread failed to submit one request within timeout!", __FUNCTION__);
+            return res;
+        } else if (res != OK) {
+            ALOGE("%s: request thread failed to submit a request: %s (%d)!",
+                    __FUNCTION__, strerror(-res), res);
+            return res;
+        }
+        queueEmpty = mNextRequests.empty() && mRequestQueue.empty();
+    }
+
+    return mInterface->switchToOffline(
+            streamsToKeep, offlineSessionInfo, offlineSession, bufferRecords);
+}
+
 status_t Camera3Device::RequestThread::setRotateAndCropAutoBehavior(
         camera_metadata_enum_android_scaler_rotate_and_crop_t rotateAndCropValue) {
     ATRACE_CALL();
     Mutex::Autolock l(mTriggerMutex);
+    if (rotateAndCropValue == ANDROID_SCALER_ROTATE_AND_CROP_AUTO) {
+        return BAD_VALUE;
+    }
     mRotateAndCropOverride = rotateAndCropValue;
-    return OK;
-}
-
-status_t Camera3Device::RequestThread::setAutoframingAutoBehaviour(
-        camera_metadata_enum_android_control_autoframing_t autoframingValue) {
-    ATRACE_CALL();
-    Mutex::Autolock l(mTriggerMutex);
-    mAutoframingOverride = autoframingValue;
     return OK;
 }
 
@@ -4239,13 +5373,6 @@ status_t Camera3Device::RequestThread::setCameraMute(int32_t muteMode) {
         mCameraMute = muteMode;
         mCameraMuteChanged = true;
     }
-    return OK;
-}
-
-status_t Camera3Device::RequestThread::setZoomOverride(int32_t zoomOverride) {
-    ATRACE_CALL();
-    Mutex::Autolock l(mTriggerMutex);
-    mSettingsOverride = zoomOverride;
     return OK;
 }
 
@@ -4278,36 +5405,6 @@ void Camera3Device::RequestThread::cleanupPhysicalSettings(sp<CaptureRequest> re
             halRequest->physcam_settings = nullptr;
         }
     }
-}
-
-status_t Camera3Device::setCameraServiceWatchdog(bool enabled) {
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-
-    if (mCameraServiceWatchdog != NULL) {
-        mCameraServiceWatchdog->setEnabled(enabled);
-    }
-
-    return OK;
-}
-
-void Camera3Device::setStreamUseCaseOverrides(
-        const std::vector<int64_t>& useCaseOverrides) {
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-    mStreamUseCaseOverrides = useCaseOverrides;
-}
-
-void Camera3Device::clearStreamUseCaseOverrides() {
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-    mStreamUseCaseOverrides.clear();
-}
-
-bool Camera3Device::hasDeviceError() {
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-    return mStatus == STATUS_ERROR;
 }
 
 void Camera3Device::RequestThread::cleanUpFailedRequests(bool sendRequestError) {
@@ -4347,8 +5444,7 @@ void Camera3Device::RequestThread::cleanUpFailedRequests(bool sendRequestError) 
                     outputBuffers->editItemAt(i).acquire_fence = -1;
                 }
                 outputBuffers->editItemAt(i).status = CAMERA_BUFFER_STATUS_ERROR;
-                captureRequest->mOutputStreams.editItemAt(i)->returnBuffer((*outputBuffers)[i],
-                        /*timestamp*/0, /*readoutTimestamp*/0,
+                captureRequest->mOutputStreams.editItemAt(i)->returnBuffer((*outputBuffers)[i], 0,
                         /*timestampIncreasing*/true, std::vector<size_t> (),
                         captureRequest->mResultExtras.frameNumber);
             }
@@ -4425,11 +5521,6 @@ void Camera3Device::RequestThread::waitForNextRequestBatch() {
     return;
 }
 
-void Camera3Device::RequestThread::setRequestClearing() {
-    Mutex::Autolock l(mRequestLock);
-    mRequestClearing = true;
-}
-
 sp<Camera3Device::CaptureRequest>
         Camera3Device::RequestThread::waitForNextRequestLocked() {
     status_t res;
@@ -4465,9 +5556,7 @@ sp<Camera3Device::CaptureRequest>
             break;
         }
 
-        if (!mRequestClearing) {
-            res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
-        }
+        res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
 
         if ((mRequestQueue.empty() && mRepeatingRequests.empty()) ||
                 exitPending()) {
@@ -4490,7 +5579,6 @@ sp<Camera3Device::CaptureRequest>
                     parent->mRequestBufferSM.onRequestThreadPaused();
                 }
             }
-            mRequestClearing = false;
             // Stop waiting for now and let thread management happen
             return NULL;
         }
@@ -4815,76 +5903,29 @@ status_t Camera3Device::RequestThread::addFakeTriggerIds(
     return OK;
 }
 
-bool Camera3Device::RequestThread::overrideAutoRotateAndCrop(const sp<CaptureRequest> &request) {
+bool Camera3Device::RequestThread::overrideAutoRotateAndCrop(
+        const sp<CaptureRequest> &request) {
     ATRACE_CALL();
-    Mutex::Autolock l(mTriggerMutex);
-    return Camera3Device::overrideAutoRotateAndCrop(request, this->mOverrideToPortrait,
-            this->mRotateAndCropOverride);
-}
-
-bool Camera3Device::overrideAutoRotateAndCrop(const sp<CaptureRequest> &request,
-        bool overrideToPortrait,
-        camera_metadata_enum_android_scaler_rotate_and_crop_t rotateAndCropOverride) {
-    ATRACE_CALL();
-
-    if (overrideToPortrait) {
-        uint8_t rotateAndCrop_u8 = rotateAndCropOverride;
-        CameraMetadata &metadata = request->mSettingsList.begin()->metadata;
-        metadata.update(ANDROID_SCALER_ROTATE_AND_CROP,
-                &rotateAndCrop_u8, 1);
-        return true;
-    }
 
     if (request->mRotateAndCropAuto) {
+        Mutex::Autolock l(mTriggerMutex);
         CameraMetadata &metadata = request->mSettingsList.begin()->metadata;
 
         auto rotateAndCropEntry = metadata.find(ANDROID_SCALER_ROTATE_AND_CROP);
         if (rotateAndCropEntry.count > 0) {
-            if (rotateAndCropEntry.data.u8[0] == rotateAndCropOverride) {
+            if (rotateAndCropEntry.data.u8[0] == mRotateAndCropOverride) {
                 return false;
             } else {
-                rotateAndCropEntry.data.u8[0] = rotateAndCropOverride;
+                rotateAndCropEntry.data.u8[0] = mRotateAndCropOverride;
                 return true;
             }
         } else {
-            uint8_t rotateAndCrop_u8 = rotateAndCropOverride;
-            metadata.update(ANDROID_SCALER_ROTATE_AND_CROP, &rotateAndCrop_u8, 1);
+            uint8_t rotateAndCrop_u8 = mRotateAndCropOverride;
+            metadata.update(ANDROID_SCALER_ROTATE_AND_CROP,
+                    &rotateAndCrop_u8, 1);
             return true;
         }
     }
-
-    return false;
-}
-
-bool Camera3Device::overrideAutoframing(const sp<CaptureRequest> &request /*out*/,
-        camera_metadata_enum_android_control_autoframing_t autoframingOverride) {
-    CameraMetadata &metadata = request->mSettingsList.begin()->metadata;
-    auto autoframingEntry = metadata.find(ANDROID_CONTROL_AUTOFRAMING);
-    if (autoframingEntry.count > 0) {
-        if (autoframingEntry.data.u8[0] == autoframingOverride) {
-            return false;
-        } else {
-            autoframingEntry.data.u8[0] = autoframingOverride;
-            return true;
-        }
-    } else {
-        uint8_t autoframing_u8 = autoframingOverride;
-        metadata.update(ANDROID_CONTROL_AUTOFRAMING,
-                &autoframing_u8, 1);
-        return true;
-    }
-
-    return false;
-}
-
-bool Camera3Device::RequestThread::overrideAutoframing(const sp<CaptureRequest> &request) {
-    ATRACE_CALL();
-
-    if (request->mAutoframingAuto) {
-        Mutex::Autolock l(mTriggerMutex);
-        return Camera3Device::overrideAutoframing(request, mAutoframingOverride);
-    }
-
     return false;
 }
 
@@ -4948,33 +5989,6 @@ bool Camera3Device::RequestThread::overrideTestPattern(
     }
 
     return changed;
-}
-
-bool Camera3Device::RequestThread::overrideSettingsOverride(
-        const sp<CaptureRequest> &request) {
-    ATRACE_CALL();
-
-    if (!mSupportSettingsOverride) return false;
-
-    Mutex::Autolock l(mTriggerMutex);
-
-    // For a multi-camera, only override the logical camera's metadata.
-    CameraMetadata &metadata = request->mSettingsList.begin()->metadata;
-    camera_metadata_entry entry = metadata.find(ANDROID_CONTROL_SETTINGS_OVERRIDE);
-    int32_t originalValue = request->mSettingsList.begin()->mOriginalSettingsOverride;
-    if (mSettingsOverride != -1 &&
-            (entry.count == 0 || entry.data.i32[0] != mSettingsOverride)) {
-        metadata.update(ANDROID_CONTROL_SETTINGS_OVERRIDE,
-                &mSettingsOverride, 1);
-        return true;
-    } else if (mSettingsOverride == -1 &&
-            (entry.count == 0 || entry.data.i32[0] != originalValue)) {
-        metadata.update(ANDROID_CONTROL_SETTINGS_OVERRIDE,
-                &originalValue, 1);
-        return true;
-    }
-
-    return false;
 }
 
 status_t Camera3Device::RequestThread::setHalInterface(
@@ -5046,8 +6060,7 @@ status_t Camera3Device::PreparerThread::prepare(int maxCount, sp<Camera3StreamIn
     }
 
     // queue up the work
-    mPendingStreams.push_back(
-            std::tuple<int, sp<camera3::Camera3StreamInterface>>(maxCount, stream));
+    mPendingStreams.emplace(maxCount, stream);
     ALOGV("%s: Stream %d queued for preparing", __FUNCTION__, stream->getId());
 
     return OK;
@@ -5058,8 +6071,8 @@ void Camera3Device::PreparerThread::pause() {
 
     Mutex::Autolock l(mLock);
 
-    std::list<std::tuple<int, sp<camera3::Camera3StreamInterface>>> pendingStreams;
-    pendingStreams.insert(pendingStreams.begin(), mPendingStreams.begin(), mPendingStreams.end());
+    std::unordered_map<int, sp<camera3::Camera3StreamInterface> > pendingStreams;
+    pendingStreams.insert(mPendingStreams.begin(), mPendingStreams.end());
     sp<camera3::Camera3StreamInterface> currentStream = mCurrentStream;
     int currentMaxCount = mCurrentMaxCount;
     mPendingStreams.clear();
@@ -5080,19 +6093,18 @@ void Camera3Device::PreparerThread::pause() {
     //of the streams in the pending list.
     if (currentStream != nullptr) {
         if (!mCurrentPrepareComplete) {
-            pendingStreams.push_back(std::tuple(currentMaxCount, currentStream));
+            pendingStreams.emplace(currentMaxCount, currentStream);
         }
     }
 
-    mPendingStreams.insert(mPendingStreams.begin(), pendingStreams.begin(), pendingStreams.end());
+    mPendingStreams.insert(pendingStreams.begin(), pendingStreams.end());
     for (const auto& it : mPendingStreams) {
-        std::get<1>(it)->cancelPrepare();
+        it.second->cancelPrepare();
     }
 }
 
 status_t Camera3Device::PreparerThread::resume() {
     ATRACE_CALL();
-    ALOGV("%s: PreparerThread", __FUNCTION__);
     status_t res;
 
     Mutex::Autolock l(mLock);
@@ -5105,10 +6117,10 @@ status_t Camera3Device::PreparerThread::resume() {
 
     auto it = mPendingStreams.begin();
     for (; it != mPendingStreams.end();) {
-        res = std::get<1>(*it)->startPrepare(std::get<0>(*it), true /*blockRequest*/);
+        res = it->second->startPrepare(it->first, true /*blockRequest*/);
         if (res == OK) {
             if (listener != NULL) {
-                listener->notifyPrepared(std::get<1>(*it)->getId());
+                listener->notifyPrepared(it->second->getId());
             }
             it = mPendingStreams.erase(it);
         } else if (res != NOT_ENOUGH_DATA) {
@@ -5142,7 +6154,7 @@ status_t Camera3Device::PreparerThread::clear() {
     Mutex::Autolock l(mLock);
 
     for (const auto& it : mPendingStreams) {
-        std::get<1>(it)->cancelPrepare();
+        it.second->cancelPrepare();
     }
     mPendingStreams.clear();
     mCancelNow = true;
@@ -5173,8 +6185,8 @@ bool Camera3Device::PreparerThread::threadLoop() {
 
             // Get next stream to prepare
             auto it = mPendingStreams.begin();
-            mCurrentMaxCount = std::get<0>(*it);
-            mCurrentStream = std::get<1>(*it);
+            mCurrentStream = it->second;
+            mCurrentMaxCount = it->first;
             mCurrentPrepareComplete = false;
             mPendingStreams.erase(it);
             ATRACE_ASYNC_BEGIN("stream prepare", mCurrentStream->getId());
@@ -5365,6 +6377,220 @@ std::vector<sp<Camera3StreamInterface>> Camera3Device::getAllStreams() {
     return ret;
 }
 
+status_t Camera3Device::switchToOffline(
+        const std::vector<int32_t>& streamsToKeep,
+        /*out*/ sp<CameraOfflineSessionBase>* session) {
+    ATRACE_CALL();
+    if (session == nullptr) {
+        ALOGE("%s: session must not be null", __FUNCTION__);
+        return BAD_VALUE;
+    }
+
+    Mutex::Autolock il(mInterfaceLock);
+
+    bool hasInputStream = mInputStream != nullptr;
+    int32_t inputStreamId = hasInputStream ? mInputStream->getId() : -1;
+    bool inputStreamSupportsOffline = hasInputStream ?
+            mInputStream->getOfflineProcessingSupport() : false;
+    auto outputStreamIds = mOutputStreams.getStreamIds();
+    auto streamIds = outputStreamIds;
+    if (hasInputStream) {
+        streamIds.push_back(mInputStream->getId());
+    }
+
+    // Check all streams in streamsToKeep supports offline mode
+    for (auto id : streamsToKeep) {
+        if (std::find(streamIds.begin(), streamIds.end(), id) == streamIds.end()) {
+            ALOGE("%s: Unknown stream ID %d", __FUNCTION__, id);
+            return BAD_VALUE;
+        } else if (id == inputStreamId) {
+            if (!inputStreamSupportsOffline) {
+                ALOGE("%s: input stream %d cannot be switched to offline",
+                        __FUNCTION__, id);
+                return BAD_VALUE;
+            }
+        } else {
+            sp<camera3::Camera3OutputStreamInterface> stream = mOutputStreams.get(id);
+            if (!stream->getOfflineProcessingSupport()) {
+                ALOGE("%s: output stream %d cannot be switched to offline",
+                        __FUNCTION__, id);
+                return BAD_VALUE;
+            }
+        }
+    }
+
+    // TODO: block surface sharing and surface group streams until we can support them
+
+    // Stop repeating request, wait until all remaining requests are submitted, then call into
+    // HAL switchToOffline
+    hardware::camera::device::V3_6::CameraOfflineSessionInfo offlineSessionInfo;
+    sp<hardware::camera::device::V3_6::ICameraOfflineSession> offlineSession;
+    camera3::BufferRecords bufferRecords;
+    status_t ret = mRequestThread->switchToOffline(
+            streamsToKeep, &offlineSessionInfo, &offlineSession, &bufferRecords);
+
+    if (ret != OK) {
+        SET_ERR("Switch to offline failed: %s (%d)", strerror(-ret), ret);
+        return ret;
+    }
+
+    bool succ = mRequestBufferSM.onSwitchToOfflineSuccess();
+    if (!succ) {
+        SET_ERR("HAL must not be calling requestStreamBuffers call");
+        // TODO: block ALL callbacks from HAL till app configured new streams?
+        return UNKNOWN_ERROR;
+    }
+
+    // Verify offlineSessionInfo
+    std::vector<int32_t> offlineStreamIds;
+    offlineStreamIds.reserve(offlineSessionInfo.offlineStreams.size());
+    for (auto offlineStream : offlineSessionInfo.offlineStreams) {
+        // verify stream IDs
+        int32_t id = offlineStream.id;
+        if (std::find(streamIds.begin(), streamIds.end(), id) == streamIds.end()) {
+            SET_ERR("stream ID %d not found!", id);
+            return UNKNOWN_ERROR;
+        }
+
+        // When not using HAL buf manager, only allow streams requested by app to be preserved
+        if (!mUseHalBufManager) {
+            if (std::find(streamsToKeep.begin(), streamsToKeep.end(), id) == streamsToKeep.end()) {
+                SET_ERR("stream ID %d must not be switched to offline!", id);
+                return UNKNOWN_ERROR;
+            }
+        }
+
+        offlineStreamIds.push_back(id);
+        sp<Camera3StreamInterface> stream = (id == inputStreamId) ?
+                static_cast<sp<Camera3StreamInterface>>(mInputStream) :
+                static_cast<sp<Camera3StreamInterface>>(mOutputStreams.get(id));
+        // Verify number of outstanding buffers
+        if (stream->getOutstandingBuffersCount() != offlineStream.numOutstandingBuffers) {
+            SET_ERR("Offline stream %d # of remaining buffer mismatch: (%zu,%d) (service/HAL)",
+                    id, stream->getOutstandingBuffersCount(), offlineStream.numOutstandingBuffers);
+            return UNKNOWN_ERROR;
+        }
+    }
+
+    // Verify all streams to be deleted don't have any outstanding buffers
+    if (hasInputStream && std::find(offlineStreamIds.begin(), offlineStreamIds.end(),
+                inputStreamId) == offlineStreamIds.end()) {
+        if (mInputStream->hasOutstandingBuffers()) {
+            SET_ERR("Input stream %d still has %zu outstanding buffer!",
+                    inputStreamId, mInputStream->getOutstandingBuffersCount());
+            return UNKNOWN_ERROR;
+        }
+    }
+
+    for (const auto& outStreamId : outputStreamIds) {
+        if (std::find(offlineStreamIds.begin(), offlineStreamIds.end(),
+                outStreamId) == offlineStreamIds.end()) {
+            auto outStream = mOutputStreams.get(outStreamId);
+            if (outStream->hasOutstandingBuffers()) {
+                SET_ERR("Output stream %d still has %zu outstanding buffer!",
+                        outStreamId, outStream->getOutstandingBuffersCount());
+                return UNKNOWN_ERROR;
+            }
+        }
+    }
+
+    InFlightRequestMap offlineReqs;
+    // Verify inflight requests and their pending buffers
+    {
+        std::lock_guard<std::mutex> l(mInFlightLock);
+        for (auto offlineReq : offlineSessionInfo.offlineRequests) {
+            int idx = mInFlightMap.indexOfKey(offlineReq.frameNumber);
+            if (idx == NAME_NOT_FOUND) {
+                SET_ERR("Offline request frame number %d not found!", offlineReq.frameNumber);
+                return UNKNOWN_ERROR;
+            }
+
+            const auto& inflightReq = mInFlightMap.valueAt(idx);
+            // TODO: check specific stream IDs
+            size_t numBuffersLeft = static_cast<size_t>(inflightReq.numBuffersLeft);
+            if (numBuffersLeft != offlineReq.pendingStreams.size()) {
+                SET_ERR("Offline request # of remaining buffer mismatch: (%d,%d) (service/HAL)",
+                        inflightReq.numBuffersLeft, offlineReq.pendingStreams.size());
+                return UNKNOWN_ERROR;
+            }
+            offlineReqs.add(offlineReq.frameNumber, inflightReq);
+        }
+    }
+
+    // Create Camera3OfflineSession and transfer object ownership
+    //   (streams, inflight requests, buffer caches)
+    camera3::StreamSet offlineStreamSet;
+    sp<camera3::Camera3Stream> inputStream;
+    for (auto offlineStream : offlineSessionInfo.offlineStreams) {
+        int32_t id = offlineStream.id;
+        if (mInputStream != nullptr && id == mInputStream->getId()) {
+            inputStream = mInputStream;
+        } else {
+            offlineStreamSet.add(id, mOutputStreams.get(id));
+        }
+    }
+
+    // TODO: check if we need to lock before copying states
+    //       though technically no other thread should be talking to Camera3Device at this point
+    Camera3OfflineStates offlineStates(
+            mTagMonitor, mVendorTagId, mUseHalBufManager, mNeedFixupMonochromeTags,
+            mUsePartialResult, mNumPartialResults, mLastCompletedRegularFrameNumber,
+            mLastCompletedReprocessFrameNumber, mLastCompletedZslFrameNumber,
+            mNextResultFrameNumber, mNextReprocessResultFrameNumber,
+            mNextZslStillResultFrameNumber, mNextShutterFrameNumber,
+            mNextReprocessShutterFrameNumber, mNextZslStillShutterFrameNumber,
+            mDeviceInfo, mPhysicalDeviceInfoMap, mDistortionMappers,
+            mZoomRatioMappers, mRotateAndCropMappers);
+
+    *session = new Camera3OfflineSession(mId, inputStream, offlineStreamSet,
+            std::move(bufferRecords), offlineReqs, offlineStates, offlineSession);
+
+    // Delete all streams that has been transferred to offline session
+    Mutex::Autolock l(mLock);
+    for (auto offlineStream : offlineSessionInfo.offlineStreams) {
+        int32_t id = offlineStream.id;
+        if (mInputStream != nullptr && id == mInputStream->getId()) {
+            mInputStream.clear();
+        } else {
+            mOutputStreams.remove(id);
+        }
+    }
+
+    // disconnect all other streams and switch to UNCONFIGURED state
+    if (mInputStream != nullptr) {
+        ret = mInputStream->disconnect();
+        if (ret != OK) {
+            SET_ERR_L("disconnect input stream failed!");
+            return UNKNOWN_ERROR;
+        }
+    }
+
+    for (auto streamId : mOutputStreams.getStreamIds()) {
+        sp<Camera3StreamInterface> stream = mOutputStreams.get(streamId);
+        ret = stream->disconnect();
+        if (ret != OK) {
+            SET_ERR_L("disconnect output stream %d failed!", streamId);
+            return UNKNOWN_ERROR;
+        }
+    }
+
+    mInputStream.clear();
+    mOutputStreams.clear();
+    mNeedConfig = true;
+    internalUpdateStatusLocked(STATUS_UNCONFIGURED);
+    mOperatingMode = NO_MODE;
+    mIsConstrainedHighSpeedConfiguration = false;
+    mRequestThread->clearPreviousRequest();
+
+    return OK;
+    // TO be done by CameraDeviceClient/Camera3OfflineSession
+    // register the offline client to camera service
+    // Setup result passthing threads etc
+    // Initialize offline session so HAL can start sending callback to it (result Fmq)
+    // TODO: check how many onIdle callback will be sent
+    // Java side to make sure the CameraCaptureSession is properly closed
+}
+
 void Camera3Device::getOfflineStreamIds(std::vector<int> *offlineStreamIds) {
     ATRACE_CALL();
 
@@ -5399,26 +6625,7 @@ status_t Camera3Device::setRotateAndCropAutoBehavior(
     if (mRequestThread == nullptr) {
         return INVALID_OPERATION;
     }
-    if (rotateAndCropValue == ANDROID_SCALER_ROTATE_AND_CROP_AUTO) {
-        return BAD_VALUE;
-    }
-    mRotateAndCropOverride = rotateAndCropValue;
     return mRequestThread->setRotateAndCropAutoBehavior(rotateAndCropValue);
-}
-
-status_t Camera3Device::setAutoframingAutoBehavior(
-    camera_metadata_enum_android_control_autoframing_t autoframingValue) {
-    ATRACE_CALL();
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-    if (mRequestThread == nullptr) {
-        return INVALID_OPERATION;
-    }
-    if (autoframingValue == ANDROID_CONTROL_AUTOFRAMING_AUTO) {
-        return BAD_VALUE;
-    }
-    mAutoframingOverride = autoframingValue;
-    return mRequestThread->setAutoframingAutoBehaviour(autoframingValue);
 }
 
 bool Camera3Device::supportsCameraMute() {
@@ -5443,37 +6650,11 @@ status_t Camera3Device::setCameraMute(bool enabled) {
     return mRequestThread->setCameraMute(muteMode);
 }
 
-bool Camera3Device::supportsZoomOverride() {
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-
-    return mSupportZoomOverride;
-}
-
-status_t Camera3Device::setZoomOverride(int32_t zoomOverride) {
-    ATRACE_CALL();
-    Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
-
-    if (mRequestThread == nullptr || !mSupportZoomOverride) {
-        return INVALID_OPERATION;
-    }
-
-    return mRequestThread->setZoomOverride(zoomOverride);
-}
-
 status_t Camera3Device::injectCamera(const String8& injectedCamId,
                                      sp<CameraProviderManager> manager) {
     ALOGI("%s Injection camera: injectedCamId = %s", __FUNCTION__, injectedCamId.string());
     ATRACE_CALL();
     Mutex::Autolock il(mInterfaceLock);
-    // When the camera device is active, injectCamera() and stopInjection() will call
-    // internalPauseAndWaitLocked() and internalResumeLocked(), and then they will call
-    // mStatusChanged.waitRelative(mLock, timeout) of waitUntilStateThenRelock(). But
-    // mStatusChanged.waitRelative(mLock, timeout)'s parameter: mutex "mLock" must be in the locked
-    // state, so we need to add "Mutex::Autolock l(mLock)" to lock the "mLock" before calling
-    // waitUntilStateThenRelock().
-    Mutex::Autolock l(mLock);
 
     status_t res = NO_ERROR;
     if (mInjectionMethods->isInjecting()) {
@@ -5489,32 +6670,23 @@ status_t Camera3Device::injectCamera(const String8& injectedCamId,
         }
     }
 
-    res = injectionCameraInitialize(injectedCamId, manager);
+    res = mInjectionMethods->injectionInitialize(injectedCamId, manager, this);
     if (res != OK) {
         ALOGE("%s: Failed to initialize the injection camera! ret != NO_ERROR: %d",
                 __FUNCTION__, res);
         return res;
     }
 
+    camera3::camera_stream_configuration injectionConfig;
+    std::vector<uint32_t> injectionBufferSizes;
+    mInjectionMethods->getInjectionConfig(&injectionConfig, &injectionBufferSizes);
     // When the second display of android is cast to the remote device, and the opened camera is
     // also cast to the second display, in this case, because the camera has configured the streams
     // at this time, we can directly call injectCamera() to replace the internal camera with
     // injection camera.
-    if (mInjectionMethods->isStreamConfigCompleteButNotInjected()) {
-        ALOGD("%s: The opened camera is directly cast to the remote device.", __FUNCTION__);
-
-        camera3::camera_stream_configuration injectionConfig;
-        std::vector<uint32_t> injectionBufferSizes;
-        mInjectionMethods->getInjectionConfig(&injectionConfig, &injectionBufferSizes);
-        if (mOperatingMode < 0 || injectionConfig.num_streams <= 0
-                    || injectionBufferSizes.size() <= 0) {
-            ALOGE("Failed to inject camera due to abandoned configuration! "
-                    "mOperatingMode: %d injectionConfig.num_streams: %d "
-                    "injectionBufferSizes.size(): %zu", mOperatingMode,
-                    injectionConfig.num_streams, injectionBufferSizes.size());
-            return DEAD_OBJECT;
-        }
-
+    if (mOperatingMode >= 0 && injectionConfig.num_streams > 0
+                && injectionBufferSizes.size() > 0) {
+        ALOGV("%s: The opened camera is directly cast to the remote device.", __FUNCTION__);
         res = mInjectionMethods->injectCamera(
                 injectionConfig, injectionBufferSizes);
         if (res != OK) {
@@ -5529,60 +6701,7 @@ status_t Camera3Device::injectCamera(const String8& injectedCamId,
 status_t Camera3Device::stopInjection() {
     ALOGI("%s: Injection camera: stopInjection", __FUNCTION__);
     Mutex::Autolock il(mInterfaceLock);
-    Mutex::Autolock l(mLock);
     return mInjectionMethods->stopInjection();
-}
-
-void Camera3Device::overrideStreamUseCaseLocked() {
-    if (mStreamUseCaseOverrides.size() == 0) {
-        return;
-    }
-
-    // Start from an array of indexes in mStreamUseCaseOverrides, and sort them
-    // based first on size, and second on formats of [JPEG, RAW, YUV, PRIV].
-    // Refer to CameraService::printHelp for details.
-    std::vector<int> outputStreamsIndices(mOutputStreams.size());
-    for (size_t i = 0; i < outputStreamsIndices.size(); i++) {
-        outputStreamsIndices[i] = i;
-    }
-
-    std::sort(outputStreamsIndices.begin(), outputStreamsIndices.end(),
-            [&](int a, int b) -> bool {
-
-                auto formatScore = [](int format) {
-                    switch (format) {
-                    case HAL_PIXEL_FORMAT_BLOB:
-                        return 4;
-                    case HAL_PIXEL_FORMAT_RAW16:
-                    case HAL_PIXEL_FORMAT_RAW10:
-                    case HAL_PIXEL_FORMAT_RAW12:
-                        return 3;
-                    case HAL_PIXEL_FORMAT_YCBCR_420_888:
-                        return 2;
-                    case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
-                        return 1;
-                    default:
-                        return 0;
-                    }
-                };
-
-                int sizeA = mOutputStreams[a]->getWidth() * mOutputStreams[a]->getHeight();
-                int sizeB = mOutputStreams[a]->getWidth() * mOutputStreams[a]->getHeight();
-                int formatAScore = formatScore(mOutputStreams[a]->getFormat());
-                int formatBScore = formatScore(mOutputStreams[b]->getFormat());
-                if (sizeA > sizeB ||
-                        (sizeA == sizeB && formatAScore >= formatBScore)) {
-                    return true;
-                } else {
-                    return false;
-                }
-            });
-
-    size_t overlapSize = std::min(mStreamUseCaseOverrides.size(), mOutputStreams.size());
-    for (size_t i = 0; i < mOutputStreams.size(); i++) {
-        mOutputStreams[outputStreamsIndices[i]]->setStreamUseCase(
-                mStreamUseCaseOverrides[std::min(i, overlapSize-1)]);
-    }
 }
 
 }; // namespace android

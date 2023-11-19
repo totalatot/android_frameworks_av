@@ -18,7 +18,6 @@
 //#define LOG_NDEBUG 0
 
 #include <camera/CameraUtils.h>
-#include <camera/camera2/OutputConfiguration.h>
 #include <media/hardware/HardwareAPI.h>
 
 #include <android-base/properties.h>
@@ -32,7 +31,7 @@ namespace android {
 const char *kCameraServiceDisabledProperty = "config.disable_cameraservice";
 
 status_t CameraUtils::getRotationTransform(const CameraMetadata& staticInfo,
-        int mirrorMode, /*out*/int32_t* transform) {
+                /*out*/int32_t* transform) {
     ALOGV("%s", __FUNCTION__);
 
     if (transform == NULL) {
@@ -56,18 +55,9 @@ status_t CameraUtils::getRotationTransform(const CameraMetadata& staticInfo,
 
     int32_t& flags = *transform;
 
-    int32_t mirror = 0;
-    if (mirrorMode == OutputConfiguration::MIRROR_MODE_AUTO &&
-            entryFacing.data.u8[0] == ANDROID_LENS_FACING_FRONT) {
-        mirror = NATIVE_WINDOW_TRANSFORM_FLIP_H;
-    } else if (mirrorMode == OutputConfiguration::MIRROR_MODE_H) {
-        mirror = NATIVE_WINDOW_TRANSFORM_FLIP_H;
-    } else if (mirrorMode == OutputConfiguration::MIRROR_MODE_V) {
-        mirror = NATIVE_WINDOW_TRANSFORM_FLIP_V;
-    }
-
+    bool mirror = (entryFacing.data.u8[0] == ANDROID_LENS_FACING_FRONT);
     int orientation = entry.data.i32[0];
-    if (mirror == 0) {
+    if (!mirror) {
         switch (orientation) {
             case 0:
                 flags = 0;
@@ -87,25 +77,25 @@ status_t CameraUtils::getRotationTransform(const CameraMetadata& staticInfo,
                 return INVALID_OPERATION;
         }
     } else {
-        // - Front camera needs to be horizontally flipped for mirror-like behavior.
-        // - Application-specified mirroring needs to be applied.
+        // Front camera needs to be horizontally flipped for mirror-like behavior.
         // Note: Flips are applied before rotates; using XOR here as some of these flags are
         // composed in terms of other flip/rotation flags, and are not bitwise-ORable.
         switch (orientation) {
             case 0:
-                flags = mirror;
+                flags = NATIVE_WINDOW_TRANSFORM_FLIP_H;
                 break;
             case 90:
-                flags = mirror ^
+                flags = NATIVE_WINDOW_TRANSFORM_FLIP_H ^
                         NATIVE_WINDOW_TRANSFORM_ROT_270;
                 break;
             case 180:
-                flags = mirror ^
+                flags = NATIVE_WINDOW_TRANSFORM_FLIP_H ^
                         NATIVE_WINDOW_TRANSFORM_ROT_180;
                 break;
             case 270:
-                flags = mirror ^
+                flags = NATIVE_WINDOW_TRANSFORM_FLIP_H ^
                         NATIVE_WINDOW_TRANSFORM_ROT_90;
+
                 break;
             default:
                 ALOGE("%s: Invalid HAL android.sensor.orientation value: %d",

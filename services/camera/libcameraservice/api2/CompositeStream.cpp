@@ -49,8 +49,7 @@ status_t CompositeStream::createStream(const std::vector<sp<Surface>>& consumers
         camera_stream_rotation_t rotation, int * id, const String8& physicalCameraId,
         const std::unordered_set<int32_t> &sensorPixelModesUsed,
         std::vector<int> * surfaceIds,
-        int streamSetId, bool isShared, bool isMultiResolution, int32_t colorSpace,
-        int64_t dynamicProfile, int64_t streamUseCase, bool useReadoutTimestamp) {
+        int streamSetId, bool isShared, bool isMultiResolution) {
     if (hasDeferredConsumer) {
         ALOGE("%s: Deferred consumers not supported in case of composite streams!",
                 __FUNCTION__);
@@ -76,8 +75,7 @@ status_t CompositeStream::createStream(const std::vector<sp<Surface>>& consumers
     }
 
     return createInternalStreams(consumers, hasDeferredConsumer, width, height, format, rotation,
-            id, physicalCameraId, sensorPixelModesUsed, surfaceIds, streamSetId, isShared,
-            colorSpace, dynamicProfile, streamUseCase, useReadoutTimestamp);
+            id, physicalCameraId, sensorPixelModesUsed, surfaceIds, streamSetId, isShared);
 }
 
 status_t CompositeStream::deleteStream() {
@@ -87,7 +85,6 @@ status_t CompositeStream::deleteStream() {
         mCaptureResults.clear();
         mFrameNumberMap.clear();
         mErrorFrameNumbers.clear();
-        mRequestTimeMap.clear();
     }
 
     return deleteInternalStreams();
@@ -98,8 +95,6 @@ void CompositeStream::onBufferRequestForFrameNumber(uint64_t frameNumber, int st
     Mutex::Autolock l(mMutex);
     if (!mErrorState && (streamId == getStreamId())) {
         mPendingCaptureResults.emplace(frameNumber, CameraMetadata());
-        auto ts = systemTime();
-        mRequestTimeMap.emplace(frameNumber, ts);
     }
 }
 
@@ -113,11 +108,6 @@ void CompositeStream::onBufferReleased(const BufferInfo& bufferInfo) {
 
 void CompositeStream::eraseResult(int64_t frameNumber) {
     Mutex::Autolock l(mMutex);
-
-    auto requestTimeIt = mRequestTimeMap.find(frameNumber);
-    if (requestTimeIt != mRequestTimeMap.end()) {
-        mRequestTimeMap.erase(requestTimeIt);
-    }
 
     auto it = mPendingCaptureResults.find(frameNumber);
     if (it == mPendingCaptureResults.end()) {

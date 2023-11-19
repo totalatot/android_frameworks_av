@@ -209,8 +209,7 @@ camera_status_t ACameraManager_unregisterAvailabilityCallback(
  * Query the capabilities of a camera device. These capabilities are
  * immutable for a given camera.
  *
- * <p>See {@link ACameraMetadata} document and <a href="https://cs.android.com/android/platform/superproject/+/master:frameworks/av/camera/ndk/include/camera/NdkCameraMetadataTags.h">NdkCameraMetadataTags.h</a>
- * for more details.</p>
+ * <p>See {@link ACameraMetadata} document and {@link NdkCameraMetadataTags.h} for more details.</p>
  *
  * <p>The caller must call {@link ACameraMetadata_free} to free the memory of the output
  * characteristics.</p>
@@ -218,7 +217,7 @@ camera_status_t ACameraManager_unregisterAvailabilityCallback(
  * @param manager the {@link ACameraManager} of interest.
  * @param cameraId the ID string of the camera device of interest.
  * @param characteristics the output {@link ACameraMetadata} will be filled here if the method call
- *        succeeds.
+ *        succeeeds.
  *
  * @return <ul>
  *         <li>{@link ACAMERA_OK} if the method call succeeds.</li>
