@@ -84,7 +84,10 @@ cc_defaults {
 
 cc_library_shared {
     name: "libaudiohal@2.0",
-    defaults: ["libaudiohal_default"],
+    defaults: [
+        "libaudiohal_default",
+        "libaudiohal_hidl_default"
+    ],
     srcs: [
         ":audio_core_hal_client_sources",
         ":audio_effect_hidl_hal_client_sources",
