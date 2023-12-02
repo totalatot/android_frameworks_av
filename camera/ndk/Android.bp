@@ -97,6 +97,7 @@ cc_library_shared {
         "-Wall",
         "-Wextra",
         "-Werror",
+	"-Wno-ordered-compare-function-pointers",
     ],
     // TODO: jchowdhary@, use header_libs instead b/131165718
     include_dirs: [

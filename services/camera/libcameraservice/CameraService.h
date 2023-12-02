@@ -671,11 +671,12 @@ private:
         bool isUidActive(uid_t uid, String16 callingPackage);
         int32_t getProcState(uid_t uid);
 
-        void onUidGone(uid_t uid, bool disabled);
-        void onUidActive(uid_t uid);
-        void onUidIdle(uid_t uid, bool disabled);
+        void onUidGone(uid_t uid, bool disabled) override;
+        void onUidActive(uid_t uid) override;
+        void onUidIdle(uid_t uid, bool disabled) override;
         void onUidStateChanged(uid_t uid, int32_t procState, int64_t procStateSeq,
-                int32_t capability);
+                int32_t capability) override;
+        void onUidProcAdjChanged(uid_t uid, int adj) override;
 
         void addOverrideUid(uid_t uid, String16 callingPackage, bool active);
         void removeOverrideUid(uid_t uid, String16 callingPackage);
@@ -712,9 +713,9 @@ private:
             void unregisterSelf();
 
             bool isSensorPrivacyEnabled();
-            bool isCameraPrivacyEnabled(userid_t userId);
+            bool isCameraPrivacyEnabled();
 
-            binder::Status onSensorPrivacyChanged(bool enabled);
+            binder::Status onSensorPrivacyChanged(int32_t toggleType, int32_t sensor, bool enabled);
 
             // IBinder::DeathRecipient implementation
             virtual void binderDied(const wp<IBinder> &who);
