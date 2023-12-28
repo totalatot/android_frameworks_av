@@ -35,16 +35,16 @@ parcelable CameraIdRemapping {
          * Ordered list of Camera Ids to replace. Only Camera Ids present in this list will be
          * affected.
          */
-        List<String> cameraIdsToReplace;
+        String[] cameraIdToReplace;
         /**
-         *  Ordered list of updated Camera Ids, where updatedCameraIds[i] corresponds to
-         *  the updated camera id for cameraIdsToReplace[i].
+         *  Ordered list of updated Camera Ids, where updatedCameraId[i] corresponds to
+         *  the updated camera id for cameraIdToReplace[i].
          */
-        List<String> updatedCameraIds;
+        String[] updatedCameraId;
     }
 
     /**
      * List of Camera Id remappings to perform.
      */
-    List<PackageIdRemapping> packageIdRemappings;
+    List<PackageIdRemapping> packageIdRemapping;
 }
