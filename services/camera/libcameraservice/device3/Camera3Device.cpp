@@ -67,7 +67,6 @@
 #include "utils/TraceHFR.h"
 
 #include <algorithm>
-#include <optional>
 #include <tuple>
 
 using namespace android::camera3;
@@ -5393,13 +5392,9 @@ void Camera3Device::getOfflineStreamIds(std::vector<int> *offlineStreamIds) {
 }
 
 status_t Camera3Device::setRotateAndCropAutoBehavior(
-    camera_metadata_enum_android_scaler_rotate_and_crop_t rotateAndCropValue, bool fromHal) {
+    camera_metadata_enum_android_scaler_rotate_and_crop_t rotateAndCropValue) {
     ATRACE_CALL();
-    // We shouldn't hold mInterfaceLock when called as an effect of a HAL
-    // callback since this can lead to a deadlock : b/299348355.
-    // mLock still protects state.
-    std::optional<Mutex::Autolock> maybeMutex =
-        fromHal ? std::nullopt : std::optional<Mutex::Autolock>(mInterfaceLock);
+    Mutex::Autolock il(mInterfaceLock);
     Mutex::Autolock l(mLock);
     if (mRequestThread == nullptr) {
         return INVALID_OPERATION;

@@ -80,8 +80,7 @@ status_t CameraOfflineSessionClient::setCameraServiceWatchdog(bool) {
     return OK;
 }
 
-status_t CameraOfflineSessionClient::setRotateAndCropOverride(uint8_t /*rotateAndCrop*/,
-        bool /*fromHal*/) {
+status_t CameraOfflineSessionClient::setRotateAndCropOverride(uint8_t /*rotateAndCrop*/) {
     // Since we're not submitting more capture requests, changes to rotateAndCrop override
     // make no difference.
     return OK;
