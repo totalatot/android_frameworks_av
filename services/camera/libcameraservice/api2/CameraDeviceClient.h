@@ -191,8 +191,7 @@ public:
             uid_t clientUid,
             int servicePid,
             bool overrideForPerfClass,
-            bool overrideToPortrait,
-            const String8& originalCameraId);
+            bool overrideToPortrait);
     virtual ~CameraDeviceClient();
 
     virtual status_t      initialize(sp<CameraProviderManager> manager,
@@ -370,9 +369,6 @@ private:
     std::string mUserTag;
     // The last set video stabilization mode
     int mVideoStabilizationMode = -1;
-
-    // This only exists in case of camera ID Remapping.
-    String8 mOriginalCameraId;
 };
 
 }; // namespace android
