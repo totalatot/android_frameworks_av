@@ -153,7 +153,7 @@ int64_t euclidDistSquare(int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
 bool roundBufferDimensionNearest(int32_t width, int32_t height,
         int32_t format, android_dataspace dataSpace,
         const CameraMetadata& info, bool maxResolution, /*out*/int32_t* outWidth,
-        /*out*/int32_t* outHeight, bool isPriviledgedClient) {
+        /*out*/int32_t* outHeight) {
     const int32_t depthSizesTag =
             getAppropriateModeTag(ANDROID_DEPTH_AVAILABLE_DEPTH_STREAM_CONFIGURATIONS,
                     maxResolution);
@@ -197,36 +197,6 @@ bool roundBufferDimensionNearest(int32_t width, int32_t height,
                 bestHeight = h;
             }
         }
-    }
-
-    if (isPriviledgedClient == true && bestWidth == -1 &&
-            (format == HAL_PIXEL_FORMAT_RAW10 || format == HAL_PIXEL_FORMAT_RAW12 ||
-            format == HAL_PIXEL_FORMAT_RAW16 || format == HAL_PIXEL_FORMAT_RAW_OPAQUE)) {
-        bool isLogicalCamera = false;
-        auto entry = info.find(ANDROID_REQUEST_AVAILABLE_CAPABILITIES);
-        for (size_t i = 0; i < entry.count; ++i) {
-            uint8_t capability = entry.data.u8[i];
-            if (capability == ANDROID_REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) {
-                isLogicalCamera = true;
-                break;
-            }
-        }
-
-        if (isLogicalCamera == true) {
-            bestWidth = width;
-            bestHeight = height;
-        }
-    }
-
-    // Avoid roundBufferDimensionsNearest for privileged client YUV streams to meet the AIDE2
-    // requirement. AIDE2 is vendor enhanced feature which requires special resolutions and
-    // those are not populated in static capabilities.
-    if (isPriviledgedClient == true && format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-        ALOGI("Bypass roundBufferDimensionNearest for privilegedClient YUV streams "
-                "width %d height %d", width, height);
-
-        bestWidth  = width;
-        bestHeight = height;
     }
 
     if (bestWidth == -1) {
@@ -460,7 +430,7 @@ binder::Status createSurfaceFromGbp(
         const String8 &logicalCameraId, const CameraMetadata &physicalCameraMetadata,
         const std::vector<int32_t> &sensorPixelModesUsed, int64_t dynamicRangeProfile,
         int64_t streamUseCase, int timestampBase, int mirrorMode,
-        int32_t colorSpace, bool isPriviledgedClient) {
+        int32_t colorSpace) {
     // bufferProducer must be non-null
     if (gbp == nullptr) {
         String8 msg = String8::format("Camera %s: Surface is NULL", logicalCameraId.string());
@@ -561,7 +531,7 @@ binder::Status createSurfaceFromGbp(
     if (flexibleConsumer && isPublicFormat(format) &&
             !SessionConfigurationUtils::roundBufferDimensionNearest(width, height,
             format, dataSpace, physicalCameraMetadata, foundInMaxRes, /*out*/&width,
-            /*out*/&height, isPriviledgedClient)) {
+            /*out*/&height)) {
         String8 msg = String8::format("Camera %s: No supported stream configurations with "
                 "format %#x defined, failed to create output stream",
                 logicalCameraId.string(), format);
@@ -711,7 +681,7 @@ convertToHALStreamCombination(
         bool isCompositeJpegRDisabled,
         metadataGetter getMetadata, const std::vector<std::string> &physicalCameraIds,
         aidl::android::hardware::camera::device::StreamConfiguration &streamConfiguration,
-        bool overrideForPerfClass, bool *earlyExit, bool isPriviledgedClient) {
+        bool overrideForPerfClass, bool *earlyExit) {
     using SensorPixelMode = aidl::android::hardware::camera::metadata::SensorPixelMode;
     auto operatingMode = sessionConfiguration.getOperatingMode();
     binder::Status res = checkOperatingMode(operatingMode, deviceInfo, logicalCameraId);
@@ -841,7 +811,7 @@ convertToHALStreamCombination(
             sp<Surface> surface;
             res = createSurfaceFromGbp(streamInfo, isStreamInfoValid, surface, bufferProducer,
                     logicalCameraId, metadataChosen, sensorPixelModesUsed, dynamicRangeProfile,
-                    streamUseCase, timestampBase, mirrorMode, colorSpace, isPriviledgedClient);
+                    streamUseCase, timestampBase, mirrorMode, colorSpace);
 
             if (!res.isOk())
                 return res;
