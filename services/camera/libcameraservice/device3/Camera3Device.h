@@ -338,11 +338,6 @@ class Camera3Device :
      */
     status_t stopInjection();
 
-    /**
-     * Inject session params into the current client.
-     */
-    status_t injectSessionParams(const CameraMetadata& sessionParams);
-
   protected:
     status_t disconnectImpl();
     static status_t removeFwkOnlyRegionKeys(CameraMetadata *request);
@@ -390,6 +385,7 @@ class Camera3Device :
     int                        mOperatingMode;
     // Current session wide parameters
     hardware::camera2::impl::CameraMetadataNative mSessionParams;
+
     // Constant to use for no set operating mode
     static const int           NO_MODE = -1;
 
@@ -1009,12 +1005,6 @@ class Camera3Device :
 
         status_t setHalInterface(sp<HalInterface> newHalInterface);
 
-        status_t setInjectedSessionParams(const CameraMetadata& sessionParams);
-
-        void injectSessionParams(
-            const sp<CaptureRequest> &request,
-            const CameraMetadata& injectedSessionParams);
-
       protected:
 
         virtual bool threadLoop();
@@ -1195,8 +1185,6 @@ class Camera3Device :
 
         Vector<int32_t>    mSessionParamKeys;
         CameraMetadata     mLatestSessionParams;
-        CameraMetadata     mInjectedSessionParams;
-        bool               mForceNewRequestAfterReconfigure;
 
         std::map<int32_t, std::set<std::string>> mGroupIdPhysicalCameraMap;
 

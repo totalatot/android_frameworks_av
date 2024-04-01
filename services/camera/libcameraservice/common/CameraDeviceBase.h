@@ -509,10 +509,6 @@ class CameraDeviceBase : public virtual FrameProducer {
      */
     virtual status_t stopInjection() = 0;
 
-    // Inject session parameters into an existing client.
-    virtual status_t injectSessionParams(
-        const CameraMetadata& sessionParams) = 0;
-
     /**
      * Set whether camera client is privileged or not
      */
