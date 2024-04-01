@@ -32,11 +32,9 @@
 #include <dlfcn.h>
 #include <future>
 #include <inttypes.h>
-#include <android_companion_virtualdevice_flags.h>
 #include <android/binder_manager.h>
 #include <android/hidl/manager/1.2/IServiceManager.h>
 #include <hidl/ServiceManagement.h>
-#include <com_android_internal_camera_flags.h>
 #include <functional>
 #include <camera_metadata_hidden.h>
 #include <android-base/parseint.h>
@@ -45,7 +43,6 @@
 #include <hwbinder/IPCThreadState.h>
 #include <utils/Trace.h>
 #include <ui/PublicFormat.h>
-#include <camera/StringUtils.h>
 
 #include "api2/HeicCompositeStream.h"
 #include "device3/ZoomRatioMapper.h"
@@ -59,13 +56,9 @@ using namespace camera3::SessionConfigurationUtils;
 using std::literals::chrono_literals::operator""s;
 using hardware::camera2::utils::CameraIdAndSessionConfiguration;
 
-namespace flags = com::android::internal::camera::flags;
-namespace vd_flags = android::companion::virtualdevice::flags;
-
 namespace {
 const bool kEnableLazyHal(property_get_bool("ro.camera.enableLazyHal", false));
 const std::string kExternalProviderName = "external/0";
-const std::string kVirtualProviderName = "virtual/0";
 } // anonymous namespace
 
 const float CameraProviderManager::kDepthARTolerance = .1f;
@@ -74,8 +67,6 @@ const bool CameraProviderManager::kFrameworkJpegRDisabled =
 
 CameraProviderManager::HidlServiceInteractionProxyImpl
 CameraProviderManager::sHidlServiceInteractionProxy{};
-CameraProviderManager::AidlServiceInteractionProxyImpl
-CameraProviderManager::sAidlServiceInteractionProxy{};
 
 CameraProviderManager::~CameraProviderManager() {
 }
@@ -138,29 +129,6 @@ status_t CameraProviderManager::tryToInitAndAddHidlProvidersLocked(
     return OK;
 }
 
-std::shared_ptr<aidl::android::hardware::camera::provider::ICameraProvider>
-CameraProviderManager::AidlServiceInteractionProxyImpl::getAidlService(
-        const std::string& serviceName) {
-    using aidl::android::hardware::camera::provider::ICameraProvider;
-
-    AIBinder* binder = nullptr;
-    if (flags::lazy_aidl_wait_for_service()) {
-        binder = AServiceManager_waitForService(serviceName.c_str());
-    } else {
-        binder = AServiceManager_getService(serviceName.c_str());
-    }
-
-    if (binder == nullptr) {
-        ALOGD("%s: AIDL Camera provider HAL '%s' is not actually available", __FUNCTION__,
-              serviceName.c_str());
-        return nullptr;
-    }
-    std::shared_ptr<ICameraProvider> interface =
-            ICameraProvider::fromBinder(ndk::SpAIBinder(binder));
-
-    return interface;
-};
-
 static std::string getFullAidlProviderName(const std::string instance) {
     std::string aidlHalServiceDescriptor =
             std::string(aidl::android::hardware::camera::provider::ICameraProvider::descriptor);
@@ -173,16 +141,9 @@ status_t CameraProviderManager::tryToAddAidlProvidersLocked() {
     auto sm = defaultServiceManager();
     auto aidlProviders = sm->getDeclaredInstances(
             String16(aidlHalServiceDescriptor));
-
-    if (isVirtualCameraHalEnabled()) {
-        // Virtual Camera provider is not declared in the VINTF manifest so we
-        // manually add it if the binary is present.
-        aidlProviders.push_back(String16(kVirtualProviderName.c_str()));
-    }
-
     for (const auto &aidlInstance : aidlProviders) {
         std::string aidlServiceName =
-                getFullAidlProviderName(toStdString(aidlInstance));
+                getFullAidlProviderName(std::string(String8(aidlInstance).c_str()));
         auto res = sm->registerForNotifications(String16(aidlServiceName.c_str()), this);
         if (res != OK) {
             ALOGE("%s Unable to register for notifications with AIDL service manager",
@@ -195,19 +156,12 @@ status_t CameraProviderManager::tryToAddAidlProvidersLocked() {
 }
 
 status_t CameraProviderManager::initialize(wp<CameraProviderManager::StatusListener> listener,
-        HidlServiceInteractionProxy* hidlProxy, AidlServiceInteractionProxy* aidlProxy) {
+        HidlServiceInteractionProxy* hidlProxy) {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
     if (hidlProxy == nullptr) {
-        ALOGE("%s: No valid service Hidl interaction proxy provided", __FUNCTION__);
+        ALOGE("%s: No valid service interaction proxy provided", __FUNCTION__);
         return BAD_VALUE;
     }
-
-    if (aidlProxy == nullptr) {
-        ALOGE("%s: No valid service Aidl interaction proxy provided", __FUNCTION__);
-        return BAD_VALUE;
-    }
-    mAidlServiceProxy = aidlProxy;
-
     mListener = listener;
     mDeviceState = 0;
     auto res = tryToInitAndAddHidlProvidersLocked(hidlProxy);
@@ -397,7 +351,7 @@ status_t CameraProviderManager::getCameraInfo(const std::string &id,
 
 status_t CameraProviderManager::isSessionConfigurationSupported(const std::string& id,
         const SessionConfiguration &configuration, bool overrideForPerfClass,
-        bool checkSessionParams, bool *status /*out*/) const {
+        metadataGetter getMetadata, bool *status /*out*/) const {
     std::lock_guard<std::mutex> lock(mInterfaceMutex);
     auto deviceInfo = findDeviceInfoLocked(id);
     if (deviceInfo == nullptr) {
@@ -405,58 +359,7 @@ status_t CameraProviderManager::isSessionConfigurationSupported(const std::strin
     }
 
     return deviceInfo->isSessionConfigurationSupported(configuration,
-            overrideForPerfClass, checkSessionParams, status);
-}
-
-status_t  CameraProviderManager::createDefaultRequest(const std::string& cameraId,
-        camera_request_template_t templateId,
-        CameraMetadata* metadata) const {
-    ATRACE_CALL();
-    if (templateId <= 0 || templateId >= CAMERA_TEMPLATE_COUNT) {
-        return BAD_VALUE;
-    }
-
-    std::lock_guard<std::mutex> lock(mInterfaceMutex);
-    auto deviceInfo = findDeviceInfoLocked(cameraId);
-    if (deviceInfo == nullptr) {
-        return NAME_NOT_FOUND;
-    }
-
-    camera_metadata_t *rawRequest;
-    status_t res = deviceInfo->createDefaultRequest(templateId,
-            &rawRequest);
-
-    if (res == BAD_VALUE) {
-        ALOGI("%s: template %d is not supported on this camera device",
-              __FUNCTION__, templateId);
-        return res;
-    } else if (res != OK) {
-        ALOGE("Unable to construct request template %d: %s (%d)",
-                templateId, strerror(-res), res);
-        return res;
-    }
-
-    set_camera_metadata_vendor_id(rawRequest, deviceInfo->mProviderTagid);
-    metadata->acquire(rawRequest);
-
-    return OK;
-}
-
-status_t CameraProviderManager::getSessionCharacteristics(const std::string& id,
-        const SessionConfiguration &configuration, bool overrideForPerfClass,
-        metadataGetter getMetadata,
-        CameraMetadata* sessionCharacteristics /*out*/) const {
-    if (!flags::feature_combination_query()) {
-        return INVALID_OPERATION;
-    }
-    std::lock_guard<std::mutex> lock(mInterfaceMutex);
-    auto deviceInfo = findDeviceInfoLocked(id);
-    if (deviceInfo == nullptr) {
-        return NAME_NOT_FOUND;
-    }
-
-    return deviceInfo->getSessionCharacteristics(configuration,
-            overrideForPerfClass, getMetadata, sessionCharacteristics);
+            overrideForPerfClass, getMetadata, status);
 }
 
 status_t CameraProviderManager::getCameraIdIPCTransport(const std::string &id,
@@ -871,14 +774,14 @@ void CameraProviderManager::saveRef(DeviceMode usageType, const std::string &cam
         primaryMap = &mCameraProviderByCameraId;
         alternateMap = &mTorchProviderByCameraId;
     }
-
-    (*primaryMap)[cameraId] = provider;
-    auto search = alternateMap->find(cameraId);
+    auto id = cameraId.c_str();
+    (*primaryMap)[id] = provider;
+    auto search = alternateMap->find(id);
     if (search != alternateMap->end()) {
         ALOGW("%s: Camera device %s is using both torch mode and camera mode simultaneously. "
-                "That should not be possible", __FUNCTION__, cameraId.c_str());
+                "That should not be possible", __FUNCTION__, id);
     }
-    ALOGV("%s: Camera device %s connected", __FUNCTION__, cameraId.c_str());
+    ALOGV("%s: Camera device %s connected", __FUNCTION__, id);
 }
 
 void CameraProviderManager::removeRef(DeviceMode usageType, const std::string &cameraId) {
@@ -893,7 +796,7 @@ void CameraProviderManager::removeRef(DeviceMode usageType, const std::string &c
         providerMap = &mCameraProviderByCameraId;
     }
     std::lock_guard<std::mutex> lock(mProviderInterfaceMapLock);
-    auto search = providerMap->find(cameraId);
+    auto search = providerMap->find(cameraId.c_str());
     if (search != providerMap->end()) {
         // Drop the reference to this ICameraProvider. This is safe to do immediately (without an
         // added delay) because hwservicemanager guarantees to hold the reference for at least five
@@ -902,7 +805,7 @@ void CameraProviderManager::removeRef(DeviceMode usageType, const std::string &c
         // restart it. An example when this could happen is switching from a front-facing to a
         // rear-facing camera. If the HAL were to exit during the camera switch, the camera could
         // appear janky to the user.
-        providerMap->erase(cameraId);
+        providerMap->erase(cameraId.c_str());
         IPCThreadState::self()->flushCommands();
     } else {
         ALOGE("%s: Asked to remove reference for camera %s, but no reference to it was found. This "
@@ -920,7 +823,7 @@ void CameraProviderManager::onServiceRegistration(const String16 &name, const sp
     {
         std::lock_guard<std::mutex> lock(mInterfaceMutex);
 
-        res = addAidlProviderLocked(toStdString(name));
+        res = addAidlProviderLocked(String8(name).c_str());
     }
 
     sp<StatusListener> listener = getStatusListener();
@@ -1058,20 +961,6 @@ void CameraProviderManager::ProviderInfo::DeviceInfo3::queryPhysicalCameraIds() 
                 mPhysicalIds.push_back((const char*)ids+start);
             }
             start = i+1;
-        }
-    }
-}
-
-CameraMetadata CameraProviderManager::ProviderInfo::DeviceInfo3::deviceInfo(
-        const std::string &id) {
-    if (id.empty()) {
-        return mCameraCharacteristics;
-    } else {
-        if (mPhysicalCameraCharacteristics.find(id) != mPhysicalCameraCharacteristics.end()) {
-            return mPhysicalCameraCharacteristics.at(id);
-        } else {
-            ALOGE("%s: Invalid physical camera id %s", __FUNCTION__, id.c_str());
-            return mCameraCharacteristics;
         }
     }
 }
@@ -1597,58 +1486,6 @@ status_t CameraProviderManager::ProviderInfo::DeviceInfo3::fixupTorchStrengthTag
     return res;
 }
 
-
-status_t CameraProviderManager::ProviderInfo::DeviceInfo3::fixupManualFlashStrengthControlTags(
-            CameraMetadata& ch) {
-    status_t res = OK;
-    auto flashSingleStrengthMaxLevelEntry = ch.find(ANDROID_FLASH_SINGLE_STRENGTH_MAX_LEVEL);
-    if (flashSingleStrengthMaxLevelEntry.count == 0) {
-        int32_t flashSingleStrengthMaxLevel = 1;
-        res = ch.update(ANDROID_FLASH_SINGLE_STRENGTH_MAX_LEVEL,
-                &flashSingleStrengthMaxLevel, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_FLASH_SINGLE_STRENGTH_MAX_LEVEL: %s (%d)",
-                    __FUNCTION__,strerror(-res), res);
-            return res;
-        }
-    }
-    auto flashSingleStrengthDefaultLevelEntry = ch.find(
-            ANDROID_FLASH_SINGLE_STRENGTH_DEFAULT_LEVEL);
-    if (flashSingleStrengthDefaultLevelEntry.count == 0) {
-        int32_t flashSingleStrengthDefaultLevel = 1;
-        res = ch.update(ANDROID_FLASH_SINGLE_STRENGTH_DEFAULT_LEVEL,
-                &flashSingleStrengthDefaultLevel, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_FLASH_SINGLE_STRENGTH_DEFAULT_LEVEL: %s (%d)",
-                    __FUNCTION__,strerror(-res), res);
-            return res;
-        }
-    }
-    auto flashTorchStrengthMaxLevelEntry = ch.find(ANDROID_FLASH_TORCH_STRENGTH_MAX_LEVEL);
-    if (flashTorchStrengthMaxLevelEntry.count == 0) {
-        int32_t flashTorchStrengthMaxLevel = 1;
-        res = ch.update(ANDROID_FLASH_TORCH_STRENGTH_MAX_LEVEL,
-                &flashTorchStrengthMaxLevel, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_FLASH_TORCH_STRENGTH_MAX_LEVEL: %s (%d)",
-                    __FUNCTION__,strerror(-res), res);
-            return res;
-        }
-    }
-    auto flashTorchStrengthDefaultLevelEntry = ch.find(ANDROID_FLASH_TORCH_STRENGTH_DEFAULT_LEVEL);
-    if (flashTorchStrengthDefaultLevelEntry.count == 0) {
-        int32_t flashTorchStrengthDefaultLevel = 1;
-        res = ch.update(ANDROID_FLASH_TORCH_STRENGTH_DEFAULT_LEVEL,
-                &flashTorchStrengthDefaultLevel, 1);
-        if (res != OK) {
-            ALOGE("%s: Failed to update ANDROID_FLASH_TORCH_STRENGTH_DEFAULT_LEVEL: %s (%d)",
-                    __FUNCTION__,strerror(-res), res);
-            return res;
-        }
-    }
-    return res;
-}
-
 status_t CameraProviderManager::ProviderInfo::DeviceInfo3::fixupMonochromeTags() {
     status_t res = OK;
     auto& c = mCameraCharacteristics;
@@ -1818,26 +1655,6 @@ status_t CameraProviderManager::ProviderInfo::DeviceInfo3::addReadoutTimestampTa
     }
 
     res = c.update(ANDROID_SENSOR_READOUT_TIMESTAMP, &readoutTimestamp, 1);
-
-    return res;
-}
-
-status_t CameraProviderManager::ProviderInfo::DeviceInfo3::addSessionConfigQueryVersionTag() {
-    sp<ProviderInfo> parentProvider = mParentProvider.promote();
-    if (parentProvider == nullptr) {
-        return DEAD_OBJECT;
-    }
-
-    int versionCode = ANDROID_INFO_SESSION_CONFIGURATION_QUERY_VERSION_UPSIDE_DOWN_CAKE;
-    IPCTransport ipcTransport = parentProvider->getIPCTransport();
-    int deviceVersion = HARDWARE_DEVICE_API_VERSION(mVersion.get_major(), mVersion.get_minor());
-    if (ipcTransport == IPCTransport::AIDL
-            && deviceVersion >= CAMERA_DEVICE_API_VERSION_1_3) {
-        versionCode = ANDROID_INFO_SESSION_CONFIGURATION_QUERY_VERSION_VANILLA_ICE_CREAM;
-    }
-
-    auto& c = mCameraCharacteristics;
-    status_t res = c.update(ANDROID_INFO_SESSION_CONFIGURATION_QUERY_VERSION, &versionCode, 1);
 
     return res;
 }
@@ -2100,9 +1917,9 @@ CameraProviderManager::isHiddenPhysicalCameraInternal(const std::string& cameraI
 status_t CameraProviderManager::tryToInitializeAidlProviderLocked(
         const std::string& providerName, const sp<ProviderInfo>& providerInfo) {
     using aidl::android::hardware::camera::provider::ICameraProvider;
-
     std::shared_ptr<ICameraProvider> interface =
-            mAidlServiceProxy->getAidlService(providerName.c_str());
+            ICameraProvider::fromBinder(ndk::SpAIBinder(
+                    AServiceManager_getService(providerName.c_str())));
 
     if (interface == nullptr) {
         ALOGW("%s: AIDL Camera provider HAL '%s' is not actually available", __FUNCTION__,
@@ -2138,18 +1955,15 @@ status_t CameraProviderManager::addAidlProviderLocked(const std::string& newProv
     bool providerPresent = false;
     bool preexisting =
             (mAidlProviderWithBinders.find(newProvider) != mAidlProviderWithBinders.end());
-    using aidl::android::hardware::camera::provider::ICameraProvider;
-    std::string providerNameUsed  =
-            newProvider.substr(std::string(ICameraProvider::descriptor).size() + 1);
-    if (flags::lazy_aidl_wait_for_service()) {
-        // 'newProvider' has the fully qualified name of the provider service in case of AIDL.
-        // ProviderInfo::mProviderName also has the fully qualified name - so we just compare them
-        // here.
-        providerNameUsed = newProvider;
-    }
 
+    // We need to use the extracted provider name here since 'newProvider' has
+    // the fully qualified name of the provider service in case of AIDL. We want
+    // just instance name.
+    using aidl::android::hardware::camera::provider::ICameraProvider;
+    std::string extractedProviderName =
+            newProvider.substr(std::string(ICameraProvider::descriptor).size() + 1);
     for (const auto& providerInfo : mProviders) {
-        if (providerInfo->mProviderName == providerNameUsed) {
+        if (providerInfo->mProviderName == extractedProviderName) {
             ALOGW("%s: Camera provider HAL with name '%s' already registered",
                     __FUNCTION__, newProvider.c_str());
             // Do not add new instances for lazy HAL external provider or aidl
@@ -2166,7 +1980,7 @@ status_t CameraProviderManager::addAidlProviderLocked(const std::string& newProv
     }
 
     sp<AidlProviderInfo> providerInfo =
-            new AidlProviderInfo(providerNameUsed, providerInstance, this);
+            new AidlProviderInfo(extractedProviderName, providerInstance, this);
 
     if (!providerPresent) {
         status_t res = tryToInitializeAidlProviderLocked(newProvider, providerInfo);
@@ -2221,14 +2035,14 @@ status_t CameraProviderManager::addHidlProviderLocked(const std::string& newProv
 status_t CameraProviderManager::removeProvider(const std::string& provider) {
     std::lock_guard<std::mutex> providerLock(mProviderLifecycleLock);
     std::unique_lock<std::mutex> lock(mInterfaceMutex);
-    std::vector<std::string> removedDeviceIds;
+    std::vector<String8> removedDeviceIds;
     status_t res = NAME_NOT_FOUND;
     std::string removedProviderName;
     for (auto it = mProviders.begin(); it != mProviders.end(); it++) {
         if ((*it)->mProviderInstance == provider) {
             removedDeviceIds.reserve((*it)->mDevices.size());
             for (auto& deviceInfo : (*it)->mDevices) {
-                removedDeviceIds.push_back(deviceInfo->mId);
+                removedDeviceIds.push_back(String8(deviceInfo->mId.c_str()));
             }
             removedProviderName = (*it)->mProviderName;
             mProviders.erase(it);
@@ -2246,9 +2060,6 @@ status_t CameraProviderManager::removeProvider(const std::string& provider) {
             if (providerInfo->mProviderName == removedProviderName) {
                 IPCTransport providerTransport = providerInfo->getIPCTransport();
                 std::string removedAidlProviderName = getFullAidlProviderName(removedProviderName);
-                if (flags::lazy_aidl_wait_for_service()) {
-                    removedAidlProviderName = removedProviderName;
-                }
                 switch(providerTransport) {
                     case IPCTransport::HIDL:
                         return tryToInitializeHidlProviderLocked(removedProviderName, providerInfo);
@@ -2371,7 +2182,7 @@ status_t CameraProviderManager::ProviderInfo::addDevice(
     return OK;
 }
 
-void CameraProviderManager::ProviderInfo::removeDevice(const std::string &id) {
+void CameraProviderManager::ProviderInfo::removeDevice(std::string id) {
     for (auto it = mDevices.begin(); it != mDevices.end(); it++) {
         if ((*it)->mId == id) {
             mUniqueCameraIds.erase(id);
@@ -2411,20 +2222,15 @@ void CameraProviderManager::ProviderInfo::removeAllDevices() {
             ALOGV("%s: notify device not_present: %s",
                   __FUNCTION__,
                   deviceName.c_str());
-            listener->onDeviceStatusChanged(id, CameraDeviceStatus::NOT_PRESENT);
+            listener->onDeviceStatusChanged(String8(id.c_str()),
+                                            CameraDeviceStatus::NOT_PRESENT);
             mLock.lock();
         }
     }
 }
 
 bool CameraProviderManager::ProviderInfo::isExternalLazyHAL() const {
-    std::string providerName = mProviderName;
-    if (flags::lazy_aidl_wait_for_service() && getIPCTransport() == IPCTransport::AIDL) {
-        using aidl::android::hardware::camera::provider::ICameraProvider;
-        providerName =
-                mProviderName.substr(std::string(ICameraProvider::descriptor).size() + 1);
-    }
-    return kEnableLazyHal && (providerName == kExternalProviderName);
+    return kEnableLazyHal && (mProviderName == kExternalProviderName);
 }
 
 status_t CameraProviderManager::ProviderInfo::dump(int fd, const Vector<String16>&) const {
@@ -2518,7 +2324,8 @@ void CameraProviderManager::ProviderInfo::cameraDeviceStatusChangeInternal(
     CameraDeviceStatus internalNewStatus = newStatus;
     if (!mInitialized) {
         mCachedStatus.emplace_back(false /*isPhysicalCameraStatus*/,
-                cameraDeviceName, std::string(), internalNewStatus);
+                cameraDeviceName.c_str(), std::string().c_str(),
+                internalNewStatus);
         return;
     }
 
@@ -2532,7 +2339,7 @@ void CameraProviderManager::ProviderInfo::cameraDeviceStatusChangeInternal(
 
     // Call without lock held to allow reentrancy into provider manager
     if (listener != nullptr) {
-        listener->onDeviceStatusChanged(id, internalNewStatus);
+        listener->onDeviceStatusChanged(String8(id.c_str()), internalNewStatus);
     }
 }
 
@@ -2608,7 +2415,8 @@ void CameraProviderManager::ProviderInfo::physicalCameraDeviceStatusChangeIntern
     }
     // Call without lock held to allow reentrancy into provider manager
     if (listener != nullptr) {
-        listener->onDeviceStatusChanged(id, physicalId, newStatus);
+        listener->onDeviceStatusChanged(String8(id.c_str()),
+                String8(physicalId.c_str()), newStatus);
     }
     return;
 }
@@ -2659,7 +2467,7 @@ status_t CameraProviderManager::ProviderInfo::physicalCameraDeviceStatusChangeLo
     }
 
     *id = cameraId;
-    *physicalId = physicalCameraDeviceName;
+    *physicalId = physicalCameraDeviceName.c_str();
     return OK;
 }
 
@@ -2703,7 +2511,7 @@ void CameraProviderManager::ProviderInfo::torchModeStatusChangeInternal(
     // findDeviceInfo, which should be holding mLock while iterating through
     // each provider's devices).
     if (listener != nullptr) {
-        listener->onTorchStatusChanged(id, newStatus, systemCameraKind);
+        listener->onTorchStatusChanged(String8(id.c_str()), newStatus, systemCameraKind);
     }
     return;
 }
@@ -2722,11 +2530,7 @@ CameraProviderManager::ProviderInfo::DeviceInfo3::DeviceInfo3(const std::string&
         const CameraResourceCost& resourceCost,
         sp<ProviderInfo> parentProvider,
         const std::vector<std::string>& publicCameraIds) :
-        DeviceInfo(name, tagId, id,
-                   hardware::hidl_version{
-                        static_cast<uint16_t >(
-                                parentProvider->getIPCTransport() == IPCTransport::HIDL ? 3 : 1),
-                                minorVersion},
+        DeviceInfo(name, tagId, id, hardware::hidl_version{3, minorVersion},
                    publicCameraIds, resourceCost, parentProvider) { }
 
 void CameraProviderManager::ProviderInfo::DeviceInfo3::notifyDeviceStateChange(int64_t newState) {
@@ -3246,10 +3050,6 @@ void CameraProviderManager::filterLogicalCameraIdsLocked(
                 return removedIds.find(s) != removedIds.end();}),
                 deviceIds.end());
     }
-}
-
-bool CameraProviderManager::isVirtualCameraHalEnabled() {
-    return vd_flags::virtual_camera_service_discovery();
 }
 
 } // namespace android

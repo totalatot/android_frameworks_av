@@ -27,6 +27,8 @@
 
 namespace android {
 
+class String8;
+
 /**
  * The RingBufferConsumer maintains a ring buffer of BufferItem objects,
  * (which are 'acquired' as long as they are part of the ring buffer, and
@@ -65,7 +67,7 @@ class RingBufferConsumer : public ConsumerBase,
 
     // set the name of the RingBufferConsumer that will be used to identify it in
     // log messages.
-    void setName(const std::string& name);
+    void setName(const String8& name);
 
     // setDefaultBufferSize is used to set the size of buffers returned by
     // requestBuffers when a with and height of zero is requested.

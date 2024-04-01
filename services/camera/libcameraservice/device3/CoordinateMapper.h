@@ -17,16 +17,12 @@
 #ifndef ANDROID_SERVERS_COORDINATEMAPPER_H
 #define ANDROID_SERVERS_COORDINATEMAPPER_H
 
-#include <algorithm>
 #include <array>
-#include <com_android_internal_camera_flags.h>
 #include <set>
 
 namespace android {
 
 namespace camera3 {
-
-namespace flags = com::android::internal::camera::flags;
 
 class CoordinateMapper {
 public:

@@ -21,7 +21,6 @@
 #include <map>
 #include <utils/Log.h>
 #include <utils/Trace.h>
-#include <camera/StringUtils.h>
 
 #include "common/FrameProducer.h"
 #include "common/FrameProcessorBase.h"
@@ -87,8 +86,8 @@ status_t FrameProcessorBase::removeListener(int32_t minId,
 }
 
 void FrameProcessorBase::dump(int fd, const Vector<String16>& /*args*/) {
-    std::string result("    Latest received frame:\n");
-    write(fd, result.c_str(), result.size());
+    String8 result("    Latest received frame:\n");
+    write(fd, result.string(), result.size());
 
     CameraMetadata lastFrame;
     std::map<std::string, CameraMetadata> lastPhysicalFrames;
@@ -98,16 +97,16 @@ void FrameProcessorBase::dump(int fd, const Vector<String16>& /*args*/) {
         lastFrame = CameraMetadata(mLastFrame);
 
         for (const auto& physicalFrame : mLastPhysicalFrames) {
-            lastPhysicalFrames.emplace(physicalFrame.mPhysicalCameraId,
+            lastPhysicalFrames.emplace(String8(physicalFrame.mPhysicalCameraId),
                     physicalFrame.mPhysicalCameraMetadata);
         }
     }
     lastFrame.dump(fd, /*verbosity*/2, /*indentation*/6);
 
     for (const auto& physicalFrame : lastPhysicalFrames) {
-        result = fmt::sprintf("   Latest received frame for physical camera %s:\n",
+        result = String8::format("   Latest received frame for physical camera %s:\n",
                 physicalFrame.first.c_str());
-        write(fd, result.c_str(), result.size());
+        write(fd, result.string(), result.size());
         CameraMetadata lastPhysicalMetadata = CameraMetadata(physicalFrame.second);
         lastPhysicalMetadata.sort();
         lastPhysicalMetadata.dump(fd, /*verbosity*/2, /*indentation*/6);
@@ -139,7 +138,7 @@ void FrameProcessorBase::processNewFrames(const sp<FrameProducer> &device) {
     ATRACE_CALL();
     CaptureResult result;
 
-    ALOGV("%s: Camera %s: Process new frames", __FUNCTION__, device->getId().c_str());
+    ALOGV("%s: Camera %s: Process new frames", __FUNCTION__, device->getId().string());
 
     while ( (res = device->getNextResult(&result)) == OK) {
 
@@ -150,7 +149,7 @@ void FrameProcessorBase::processNewFrames(const sp<FrameProducer> &device) {
         entry = result.mMetadata.find(ANDROID_REQUEST_FRAME_COUNT);
         if (entry.count == 0) {
             ALOGE("%s: Camera %s: Error reading frame number",
-                    __FUNCTION__, device->getId().c_str());
+                    __FUNCTION__, device->getId().string());
             break;
         }
         ATRACE_INT("cam2_frame", entry.data.i32[0]);
@@ -168,7 +167,7 @@ void FrameProcessorBase::processNewFrames(const sp<FrameProducer> &device) {
     }
     if (res != NOT_ENOUGH_DATA) {
         ALOGE("%s: Camera %s: Error getting next frame: %s (%d)",
-                __FUNCTION__, device->getId().c_str(), strerror(-res), res);
+                __FUNCTION__, device->getId().string(), strerror(-res), res);
         return;
     }
 
@@ -178,7 +177,7 @@ void FrameProcessorBase::processNewFrames(const sp<FrameProducer> &device) {
 bool FrameProcessorBase::processSingleFrame(CaptureResult &result,
                                             const sp<FrameProducer> &device) {
     ALOGV("%s: Camera %s: Process single frame (is empty? %d)",
-            __FUNCTION__, device->getId().c_str(), result.mMetadata.isEmpty());
+            __FUNCTION__, device->getId().string(), result.mMetadata.isEmpty());
     return processListeners(result, device) == OK;
 }
 
@@ -198,7 +197,7 @@ status_t FrameProcessorBase::processListeners(const CaptureResult &result,
     // include CaptureResultExtras.
     entry = result.mMetadata.find(ANDROID_REQUEST_ID);
     if (entry.count == 0) {
-        ALOGE("%s: Camera %s: Error reading frame id", __FUNCTION__, device->getId().c_str());
+        ALOGE("%s: Camera %s: Error reading frame id", __FUNCTION__, device->getId().string());
         return BAD_VALUE;
     }
     int32_t requestId = entry.data.i32[0];
@@ -224,7 +223,7 @@ status_t FrameProcessorBase::processListeners(const CaptureResult &result,
         }
     }
     ALOGV("%s: Camera %s: Got %zu range listeners out of %zu", __FUNCTION__,
-          device->getId().c_str(), listeners.size(), mRangeListeners.size());
+          device->getId().string(), listeners.size(), mRangeListeners.size());
 
     List<sp<FilteredListener> >::iterator item = listeners.begin();
     for (; item != listeners.end(); item++) {

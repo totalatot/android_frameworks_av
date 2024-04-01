@@ -19,6 +19,7 @@
 #define LOG_TAG "Camera"
 #include <utils/Log.h>
 #include <utils/threads.h>
+#include <utils/String16.h>
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
 #include <binder/IMemory.h>
@@ -69,7 +70,7 @@ Camera::~Camera()
     // deadlock if we call any method of ICamera here.
 }
 
-sp<Camera> Camera::connect(int cameraId, const std::string& clientPackageName,
+sp<Camera> Camera::connect(int cameraId, const String16& clientPackageName,
         int clientUid, int clientPid, int targetSdkVersion, bool overrideToPortrait,
         bool forceSlowJpegMode)
 {
@@ -245,7 +246,7 @@ String8 Camera::getParameters() const
     ALOGV("getParameters");
     String8 params;
     sp <::android::hardware::ICamera> c = mCamera;
-    if (c != 0) params = c->getParameters();
+    if (c != 0) params = mCamera->getParameters();
     return params;
 }
 
@@ -269,7 +270,7 @@ void Camera::setPreviewCallbackFlags(int flag)
     ALOGV("setPreviewCallbackFlags");
     sp <::android::hardware::ICamera> c = mCamera;
     if (c == 0) return;
-    c->setPreviewCallbackFlag(flag);
+    mCamera->setPreviewCallbackFlag(flag);
 }
 
 status_t Camera::setPreviewCallbackTarget(

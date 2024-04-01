@@ -18,15 +18,11 @@
 #define ATRACE_TAG ATRACE_TAG_CAMERA
 //#define LOG_NDEBUG 0
 
-#include <iostream>
-#include <sstream>
-
 #include "TagMonitor.h"
 
 #include <inttypes.h>
 #include <utils/Log.h>
 #include <camera/VendorTagDescriptor.h>
-#include <camera/StringUtils.h>
 #include <camera_metadata_hidden.h>
 #include <device3/Camera3Stream.h>
 
@@ -48,7 +44,7 @@ TagMonitor::TagMonitor(const TagMonitor& other):
         mMonitoringEvents(other.mMonitoringEvents),
         mVendorTagId(other.mVendorTagId) {}
 
-const std::string TagMonitor::kMonitorOption("-m");
+const String16 TagMonitor::kMonitorOption = String16("-m");
 
 const char* TagMonitor::k3aTags =
         "android.control.aeMode, android.control.afMode, android.control.awbMode,"
@@ -60,17 +56,17 @@ const char* TagMonitor::k3aTags =
         "android.control.effectMode, android.control.mode, android.control.sceneMode,"
         "android.control.videoStabilizationMode";
 
-void TagMonitor::parseTagsToMonitor(std::string tagNames) {
+void TagMonitor::parseTagsToMonitor(String8 tagNames) {
     std::lock_guard<std::mutex> lock(mMonitorMutex);
 
     // Expand shorthands
     ssize_t idx = tagNames.find("3a");
     if (idx != -1) {
         ssize_t end = tagNames.find(",", idx);
-        tagNames = tagNames.substr(0, idx) + k3aTags;
-        if (end != -1) {
-            tagNames += tagNames.substr(end);
-        }
+        char* start = tagNames.lockBuffer(tagNames.size());
+        start[idx] = '\0';
+        char* rest = (end != -1) ? (start + end) : (start + tagNames.size());
+        tagNames = String8::format("%s%s%s", start, k3aTags, rest);
     }
 
     sp<VendorTagDescriptor> vTags =
@@ -85,13 +81,14 @@ void TagMonitor::parseTagsToMonitor(std::string tagNames) {
 
     bool gotTag = false;
 
-    std::istringstream iss(tagNames);
-    std::string nextTagName;
-    while (std::getline(iss, nextTagName, ',')) {
+    char *tokenized = tagNames.lockBuffer(tagNames.size());
+    char *savePtr;
+    char *nextTagName = strtok_r(tokenized, ", ", &savePtr);
+    while (nextTagName != nullptr) {
         uint32_t tag;
-        status_t res = CameraMetadata::getTagFromName(nextTagName.c_str(), vTags.get(), &tag);
+        status_t res = CameraMetadata::getTagFromName(nextTagName, vTags.get(), &tag);
         if (res != OK) {
-            ALOGW("%s: Unknown tag %s, ignoring", __FUNCTION__, nextTagName.c_str());
+            ALOGW("%s: Unknown tag %s, ignoring", __FUNCTION__, nextTagName);
         } else {
             if (!gotTag) {
                 mMonitoredTagList.clear();
@@ -99,8 +96,10 @@ void TagMonitor::parseTagsToMonitor(std::string tagNames) {
             }
             mMonitoredTagList.push_back(tag);
         }
-        iss >> std::ws;
+        nextTagName = strtok_r(nullptr, ", ", &savePtr);
     }
+
+    tagNames.unlockBuffer();
 
     if (gotTag) {
         // Got at least one new tag
@@ -270,7 +269,7 @@ void TagMonitor::dumpMonitoredTagEventsToVectorLocked(std::vector<std::string> &
 
     for (const auto& event : mMonitoringEvents) {
         int indentation = (event.source == REQUEST) ? 15 : 30;
-        std::string eventString = fmt::sprintf("f%d:%" PRId64 "ns:%*s%*s",
+        String8 eventString = String8::format("f%d:%" PRId64 "ns:%*s%*s",
                 event.frameNumber, event.timestamp,
                 2, event.cameraId.c_str(),
                 indentation,
@@ -279,20 +278,20 @@ void TagMonitor::dumpMonitoredTagEventsToVectorLocked(std::vector<std::string> &
         if (!event.outputStreamIds.empty()) {
             eventString += " output stream ids:";
             for (const auto& id : event.outputStreamIds) {
-                eventString += fmt::sprintf(" %d", id);
+                eventString.appendFormat(" %d", id);
             }
             eventString += "\n";
-            vec.emplace_back(eventString);
+            vec.emplace_back(eventString.string());
             continue;
         }
 
         if (event.inputStreamId != -1) {
-            eventString += fmt::sprintf(" input stream id: %d\n", event.inputStreamId);
-            vec.emplace_back(eventString);
+            eventString.appendFormat(" input stream id: %d\n", event.inputStreamId);
+            vec.emplace_back(eventString.string());
             continue;
         }
 
-        eventString += fmt::sprintf(
+        eventString += String8::format(
                 "%s.%s: ",
                 get_local_camera_metadata_section_name_vendor_id(event.tag, mVendorTagId),
                 get_local_camera_metadata_tag_name_vendor_id(event.tag, mVendorTagId));
@@ -304,14 +303,14 @@ void TagMonitor::dumpMonitoredTagEventsToVectorLocked(std::vector<std::string> &
                     event.newData.data(), event.tag, event.type,
                     event.newData.size() / camera_metadata_type_size[event.type], indentation + 18);
         }
-        vec.emplace_back(eventString);
+        vec.emplace_back(eventString.string());
     }
 }
 
 #define CAMERA_METADATA_ENUM_STRING_MAX_SIZE 29
 
-std::string TagMonitor::getEventDataString(const uint8_t* data_ptr, uint32_t tag, int type,
-        int count, int indentation) {
+String8 TagMonitor::getEventDataString(const uint8_t* data_ptr, uint32_t tag, int type, int count,
+                                       int indentation) {
     static int values_per_line[NUM_TYPES] = {
         [TYPE_BYTE]     = 16,
         [TYPE_INT32]    = 8,
@@ -328,11 +327,11 @@ std::string TagMonitor::getEventDataString(const uint8_t* data_ptr, uint32_t tag
     int lines = count / values_per_line[type];
     if (count % values_per_line[type] != 0) lines++;
 
-    std::ostringstream returnStr;
+    String8 returnStr = String8();
     int index = 0;
     int j, k;
     for (j = 0; j < lines; j++) {
-        returnStr << fmt::sprintf("%*s[", (j != 0) ? indentation + 4 : 0, "");
+        returnStr.appendFormat("%*s[", (j != 0) ? indentation + 4 : 0, "");
         for (k = 0;
              k < values_per_line[type] && count > 0;
              k++, count--, index += type_size) {
@@ -345,9 +344,9 @@ std::string TagMonitor::getEventDataString(const uint8_t* data_ptr, uint32_t tag
                                                      value_string_tmp,
                                                      sizeof(value_string_tmp))
                         == OK) {
-                        returnStr << value_string_tmp;
+                        returnStr += value_string_tmp;
                     } else {
-                        returnStr << fmt::sprintf("%hhu ", *(data_ptr + index));
+                        returnStr.appendFormat("%hhu ", *(data_ptr + index));
                     }
                     break;
                 case TYPE_INT32:
@@ -358,33 +357,33 @@ std::string TagMonitor::getEventDataString(const uint8_t* data_ptr, uint32_t tag
                                                      value_string_tmp,
                                                      sizeof(value_string_tmp))
                         == OK) {
-                        returnStr << value_string_tmp;
+                        returnStr += value_string_tmp;
                     } else {
-                        returnStr << fmt::sprintf("%" PRId32 " ", *(int32_t*)(data_ptr + index));
+                        returnStr.appendFormat("%" PRId32 " ", *(int32_t*)(data_ptr + index));
                     }
                     break;
                 case TYPE_FLOAT:
-                    returnStr << fmt::sprintf("%0.8f ", *(float*)(data_ptr + index));
+                    returnStr.appendFormat("%0.8f ", *(float*)(data_ptr + index));
                     break;
                 case TYPE_INT64:
-                    returnStr << fmt::sprintf("%" PRId64 " ", *(int64_t*)(data_ptr + index));
+                    returnStr.appendFormat("%" PRId64 " ", *(int64_t*)(data_ptr + index));
                     break;
                 case TYPE_DOUBLE:
-                    returnStr << fmt::sprintf("%0.8f ", *(double*)(data_ptr + index));
+                    returnStr.appendFormat("%0.8f ", *(double*)(data_ptr + index));
                     break;
                 case TYPE_RATIONAL: {
                     int32_t numerator = *(int32_t*)(data_ptr + index);
                     int32_t denominator = *(int32_t*)(data_ptr + index + 4);
-                    returnStr << fmt::sprintf("(%d / %d) ", numerator, denominator);
+                    returnStr.appendFormat("(%d / %d) ", numerator, denominator);
                     break;
                 }
                 default:
-                    returnStr << "??? ";
+                    returnStr += "??? ";
             }
         }
-        returnStr << "]\n";
+        returnStr += "]\n";
     }
-    return std::move(returnStr.str());
+    return returnStr;
 }
 
 template<typename T>

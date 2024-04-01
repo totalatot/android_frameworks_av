@@ -31,7 +31,6 @@
 #include <gui/BufferItem.h>
 #include <gui/Surface.h>
 #include <media/hardware/HardwareAPI.h>
-#include <camera/StringUtils.h>
 
 #include "common/CameraDeviceBase.h"
 #include "api1/Camera2Client.h"
@@ -199,7 +198,7 @@ status_t StreamingProcessor::updatePreviewStream(const Parameters &params) {
         res = device->createStream(mPreviewWindow,
                 params.previewWidth, params.previewHeight,
                 CAMERA2_HAL_PIXEL_FORMAT_OPAQUE, HAL_DATASPACE_UNKNOWN,
-                CAMERA_STREAM_ROTATION_0, &mPreviewStreamId, std::string(),
+                CAMERA_STREAM_ROTATION_0, &mPreviewStreamId, String8(),
                 std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
         if (res != OK) {
             ALOGE("%s: Camera %d: Unable to create preview stream: %s (%d)",
@@ -386,7 +385,7 @@ status_t StreamingProcessor::updateRecordingStream(const Parameters &params) {
                 params.videoWidth, params.videoHeight,
                 params.videoFormat, params.videoDataSpace,
                 CAMERA_STREAM_ROTATION_0, &mRecordingStreamId,
-                std::string(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
+                String8(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
         if (res != OK) {
             ALOGE("%s: Camera %d: Can't create output stream for recording: "
                     "%s (%d)", __FUNCTION__, mId,
@@ -586,21 +585,21 @@ status_t StreamingProcessor::incrementStreamingIds() {
 }
 
 status_t StreamingProcessor::dump(int fd, const Vector<String16>& /*args*/) {
-    std::string result;
+    String8 result;
 
-    result += "  Current requests:\n";
+    result.append("  Current requests:\n");
     if (mPreviewRequest.entryCount() != 0) {
-        result += "    Preview request:\n";
-        write(fd, result.c_str(), result.size());
+        result.append("    Preview request:\n");
+        write(fd, result.string(), result.size());
         mPreviewRequest.dump(fd, 2, 6);
         result.clear();
     } else {
-        result += "    Preview request: undefined\n";
+        result.append("    Preview request: undefined\n");
     }
 
     if (mRecordingRequest.entryCount() != 0) {
         result = "    Recording request:\n";
-        write(fd, result.c_str(), result.size());
+        write(fd, result.string(), result.size());
         mRecordingRequest.dump(fd, 2, 6);
         result.clear();
     } else {
@@ -610,11 +609,11 @@ status_t StreamingProcessor::dump(int fd, const Vector<String16>& /*args*/) {
     const char* streamTypeString[] = {
         "none", "preview", "record"
     };
-    result += fmt::sprintf("   Active request: %s (paused: %s\n",
-            streamTypeString[mActiveRequest],
-            mPaused ? "yes" : "no");
+    result.append(String8::format("   Active request: %s (paused: %s)\n",
+                                  streamTypeString[mActiveRequest],
+                                  mPaused ? "yes" : "no"));
 
-    write(fd, result.c_str(), result.size());
+    write(fd, result.string(), result.size());
 
     return OK;
 }

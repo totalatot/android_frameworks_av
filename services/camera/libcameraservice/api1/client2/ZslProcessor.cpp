@@ -30,7 +30,6 @@
 #include <utils/Log.h>
 #include <utils/Trace.h>
 #include <gui/Surface.h>
-#include <camera/StringUtils.h>
 
 #include "common/CameraDeviceBase.h"
 #include "api1/Camera2Client.h"
@@ -256,13 +255,13 @@ status_t ZslProcessor::updateStream(const Parameters &params) {
         BufferQueue::createBufferQueue(&producer, &consumer);
         mProducer = new RingBufferConsumer(consumer, GRALLOC_USAGE_HW_CAMERA_ZSL,
             mBufferQueueDepth);
-        mProducer->setName("Camera2-ZslRingBufferConsumer");
+        mProducer->setName(String8("Camera2-ZslRingBufferConsumer"));
         sp<Surface> outSurface = new Surface(producer);
 
         res = device->createStream(outSurface, params.fastInfo.usedZslSize.width,
             params.fastInfo.usedZslSize.height, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
             HAL_DATASPACE_UNKNOWN, CAMERA_STREAM_ROTATION_0, &mZslStreamId,
-            std::string(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
+            String8(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
         if (res != OK) {
             ALOGE("%s: Camera %d: Can't create ZSL stream: "
                     "%s (%d)", __FUNCTION__, client->getCameraId(),
@@ -681,12 +680,12 @@ void ZslProcessor::clearZslResultQueueLocked() {
 void ZslProcessor::dump(int fd, const Vector<String16>& /*args*/) const {
     Mutex::Autolock l(mInputMutex);
     if (!mLatestCapturedRequest.isEmpty()) {
-        std::string result = "    Latest ZSL capture request:\n";
-        write(fd, result.c_str(), result.size());
+        String8 result("    Latest ZSL capture request:\n");
+        write(fd, result.string(), result.size());
         mLatestCapturedRequest.dump(fd, 2, 6);
     } else {
-        std::string result = "    Latest ZSL capture request: none yet\n";
-        write(fd, result.c_str(), result.size());
+        String8 result("    Latest ZSL capture request: none yet\n");
+        write(fd, result.string(), result.size());
     }
     dumpZslQueue(fd);
 }
@@ -707,12 +706,12 @@ bool ZslProcessor::threadLoop() {
 }
 
 void ZslProcessor::dumpZslQueue(int fd) const {
-    std::string header = "ZSL queue contents:";
-    std::string indent = "    ";
-    ALOGV("%s", header.c_str());
+    String8 header("ZSL queue contents:");
+    String8 indent("    ");
+    ALOGV("%s", header.string());
     if (fd != -1) {
         header = indent + header + "\n";
-        write(fd, header.c_str(), header.size());
+        write(fd, header.string(), header.size());
     }
     for (size_t i = 0; i < mZslQueue.size(); i++) {
         const ZslPair &queueEntry = mZslQueue[i];
@@ -726,13 +725,13 @@ void ZslProcessor::dumpZslQueue(int fd) const {
             entry = queueEntry.frame.find(ANDROID_CONTROL_AE_STATE);
             if (entry.count > 0) frameAeState = entry.data.u8[0];
         }
-        std::string result =
-                fmt::sprintf("   %zu: b: %" PRId64 "\tf: %" PRId64 ", AE state: %d", i,
+        String8 result =
+                String8::format("   %zu: b: %" PRId64 "\tf: %" PRId64 ", AE state: %d", i,
                         bufferTimestamp, frameTimestamp, frameAeState);
-        ALOGV("%s", result.c_str());
+        ALOGV("%s", result.string());
         if (fd != -1) {
             result = indent + result + "\n";
-            write(fd, result.c_str(), result.size());
+            write(fd, result.string(), result.size());
         }
 
     }

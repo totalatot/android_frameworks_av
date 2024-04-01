@@ -18,7 +18,6 @@
 #include <aidl/AidlUtils.h>
 #include <aidl/android/frameworks/cameraservice/common/Status.h>
 #include <aidl/android/frameworks/cameraservice/service/CameraStatusAndId.h>
-#include <camera/StringUtils.h>
 
 namespace android::frameworks::cameraservice::service::implementation {
 
@@ -28,31 +27,34 @@ using SCameraStatusAndId = ::aidl::android::frameworks::cameraservice::service::
 using SStatus = ::aidl::android::frameworks::cameraservice::common::Status;
 
 binder::Status AidlCameraServiceListener::onStatusChanged(
-        int32_t status, const std::string& cameraId) {
+        int32_t status, const ::android::String16& cameraId) {
     SCameraDeviceStatus sStatus = convertCameraStatusToAidl(status);
-    auto ret = mBase->onStatusChanged(sStatus, cameraId);
+    std::string sCameraId = String8(cameraId).string();
+    auto ret = mBase->onStatusChanged(sStatus, sCameraId);
     LOG_STATUS_ERROR_IF_NOT_OK(ret, "onStatusChanged")
     return binder::Status::ok();
 }
 
 binder::Status AidlCameraServiceListener::onPhysicalCameraStatusChanged(
-        int32_t status, const std::string& cameraId,
-        const std::string& physicalCameraId) {
+        int32_t status, const ::android::String16& cameraId,
+        const ::android::String16& physicalCameraId) {
     SCameraDeviceStatus sStatus = convertCameraStatusToAidl(status);
+    std::string sCameraId = String8(cameraId).string();
+    std::string sPhysicalCameraId = String8(physicalCameraId).string();
 
-    auto ret = mBase->onPhysicalCameraStatusChanged(sStatus, cameraId, physicalCameraId);
+    auto ret = mBase->onPhysicalCameraStatusChanged(sStatus, sCameraId, sPhysicalCameraId);
     LOG_STATUS_ERROR_IF_NOT_OK(ret, "onPhysicalCameraStatusChanged")
     return binder::Status::ok();
 }
 
 ::android::binder::Status AidlCameraServiceListener::onTorchStatusChanged(
-    int32_t, const std::string&) {
+    int32_t, const ::android::String16&) {
   // We don't implement onTorchStatusChanged
   return binder::Status::ok();
 }
 
 ::android::binder::Status AidlCameraServiceListener::onTorchStrengthLevelChanged(
-    const std::string&, int32_t) {
+    const ::android::String16&, int32_t) {
     // We don't implement onTorchStrengthLevelChanged
     return binder::Status::ok();
 }

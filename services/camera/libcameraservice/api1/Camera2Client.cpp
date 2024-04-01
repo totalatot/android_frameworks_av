@@ -18,14 +18,11 @@
 #define ATRACE_TAG ATRACE_TAG_CAMERA
 //#define LOG_NDEBUG 0
 
-#include <sstream>
-
 #include <inttypes.h>
 #include <utils/Log.h>
 #include <utils/Trace.h>
 
 #include <camera/CameraUtils.h>
-#include <camera/StringUtils.h>
 #include <cutils/properties.h>
 #include <gui/Surface.h>
 #include <android/hardware/camera2/ICameraDeviceCallbacks.h>
@@ -56,9 +53,9 @@ using namespace camera2;
 Camera2Client::Camera2Client(const sp<CameraService>& cameraService,
         const sp<hardware::ICameraClient>& cameraClient,
         std::shared_ptr<CameraServiceProxyWrapper> cameraServiceProxyWrapper,
-        const std::string& clientPackageName,
-        const std::optional<std::string>& clientFeatureId,
-        const std::string& cameraDeviceId,
+        const String16& clientPackageName,
+        const std::optional<String16>& clientFeatureId,
+        const String8& cameraDeviceId,
         int api1CameraId,
         int cameraFacing,
         int sensorOrientation,
@@ -88,8 +85,7 @@ Camera2Client::Camera2Client(const sp<CameraService>& cameraService,
     l.mParameters.isSlowJpegModeForced = forceSlowJpegMode;
 }
 
-status_t Camera2Client::initialize(sp<CameraProviderManager> manager,
-        const std::string& monitorTags) {
+status_t Camera2Client::initialize(sp<CameraProviderManager> manager, const String8& monitorTags) {
     return initializeImpl(manager, monitorTags);
 }
 
@@ -109,7 +105,7 @@ bool Camera2Client::isZslEnabledInStillTemplate() {
 }
 
 template<typename TProviderPtr>
-status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::string& monitorTags)
+status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const String8& monitorTags)
 {
     ATRACE_CALL();
     ALOGV("%s: Initializing client for camera %d", __FUNCTION__, mCameraId);
@@ -141,11 +137,16 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
     CameraUtils::getRotationTransform(staticInfo, OutputConfiguration::MIRROR_MODE_AUTO,
             &mRotateAndCropPreviewTransform);
 
-    mStreamingProcessor = new StreamingProcessor(this);
+    String8 threadName;
 
-    std::string threadName = std::string("C2-") + std::to_string(mCameraId);
+    mStreamingProcessor = new StreamingProcessor(this);
+    threadName = String8::format("C2-%d-StreamProc",
+            mCameraId);
+
     mFrameProcessor = new FrameProcessor(mDevice, this);
-    res = mFrameProcessor->run((threadName + "-FrameProc").c_str());
+    threadName = String8::format("C2-%d-FrameProc",
+            mCameraId);
+    res = mFrameProcessor->run(threadName.string());
     if (res != OK) {
         ALOGE("%s: Unable to start frame processor thread: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
@@ -153,7 +154,9 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
     }
 
     mCaptureSequencer = new CaptureSequencer(this);
-    res = mCaptureSequencer->run((threadName + "-CaptureSeq").c_str());
+    threadName = String8::format("C2-%d-CaptureSeq",
+            mCameraId);
+    res = mCaptureSequencer->run(threadName.string());
     if (res != OK) {
         ALOGE("%s: Unable to start capture sequencer thread: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
@@ -161,7 +164,9 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
     }
 
     mJpegProcessor = new JpegProcessor(this, mCaptureSequencer);
-    res = mJpegProcessor->run((threadName + "-JpegProc").c_str());
+    threadName = String8::format("C2-%d-JpegProc",
+            mCameraId);
+    res = mJpegProcessor->run(threadName.string());
     if (res != OK) {
         ALOGE("%s: Unable to start jpeg processor thread: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
@@ -169,7 +174,10 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
     }
 
     mZslProcessor = new ZslProcessor(this, mCaptureSequencer);
-    res = mZslProcessor->run((threadName + "-ZslProc").c_str());
+
+    threadName = String8::format("C2-%d-ZslProc",
+            mCameraId);
+    res = mZslProcessor->run(threadName.string());
     if (res != OK) {
         ALOGE("%s: Unable to start zsl processor thread: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
@@ -177,7 +185,9 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
     }
 
     mCallbackProcessor = new CallbackProcessor(this);
-    res = mCallbackProcessor->run((threadName + "-CallbkProc").c_str());
+    threadName = String8::format("C2-%d-CallbkProc",
+            mCameraId);
+    res = mCallbackProcessor->run(threadName.string());
     if (res != OK) {
         ALOGE("%s: Unable to start callback processor thread: %s (%d)",
                 __FUNCTION__, strerror(-res), res);
@@ -188,7 +198,7 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const std::stri
         SharedParameters::Lock l(mParameters);
         ALOGD("%s: Default parameters converted from camera %d:", __FUNCTION__,
               mCameraId);
-        ALOGD("%s", l.mParameters.paramsFlattened.c_str());
+        ALOGD("%s", l.mParameters.paramsFlattened.string());
     }
 
     return OK;
@@ -210,47 +220,47 @@ status_t Camera2Client::dump(int fd, const Vector<String16>& args) {
 }
 
 status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
-    std::ostringstream result;
-    result << fmt::sprintf("Client2[%d] (%p) PID: %d, dump:\n", mCameraId,
+    String8 result;
+    result.appendFormat("Client2[%d] (%p) PID: %d, dump:\n", mCameraId,
             (getRemoteCallback() != NULL ?
-                    (void *) (IInterface::asBinder(getRemoteCallback()).get()) : NULL),
+                    (IInterface::asBinder(getRemoteCallback()).get()) : NULL),
             mClientPid);
-    result << "  State: ";
-#define CASE_APPEND_ENUM(x) case x: result << #x "\n"; break;
+    result.append("  State: ");
+#define CASE_APPEND_ENUM(x) case x: result.append(#x "\n"); break;
 
     const Parameters& p = mParameters.unsafeAccess();
 
-    result << Parameters::getStateName(p.state);
+    result.append(Parameters::getStateName(p.state));
 
-    result << "\n  Current parameters:\n";
-    result << fmt::sprintf("    Preview size: %d x %d\n",
+    result.append("\n  Current parameters:\n");
+    result.appendFormat("    Preview size: %d x %d\n",
             p.previewWidth, p.previewHeight);
-    result << fmt::sprintf("    Preview FPS range: %d - %d\n",
+    result.appendFormat("    Preview FPS range: %d - %d\n",
             p.previewFpsRange[0], p.previewFpsRange[1]);
-    result << fmt::sprintf("    Preview HAL pixel format: 0x%x\n",
+    result.appendFormat("    Preview HAL pixel format: 0x%x\n",
             p.previewFormat);
-    result << fmt::sprintf("    Preview transform: %x\n",
+    result.appendFormat("    Preview transform: %x\n",
             p.previewTransform);
-    result << fmt::sprintf("    Picture size: %d x %d\n",
+    result.appendFormat("    Picture size: %d x %d\n",
             p.pictureWidth, p.pictureHeight);
-    result << fmt::sprintf("    Jpeg thumbnail size: %d x %d\n",
+    result.appendFormat("    Jpeg thumbnail size: %d x %d\n",
             p.jpegThumbSize[0], p.jpegThumbSize[1]);
-    result << fmt::sprintf("    Jpeg quality: %d, thumbnail quality: %d\n",
+    result.appendFormat("    Jpeg quality: %d, thumbnail quality: %d\n",
             p.jpegQuality, p.jpegThumbQuality);
-    result << fmt::sprintf("    Jpeg rotation: %d\n", p.jpegRotation);
-    result << fmt::sprintf("    GPS tags %s\n",
+    result.appendFormat("    Jpeg rotation: %d\n", p.jpegRotation);
+    result.appendFormat("    GPS tags %s\n",
             p.gpsEnabled ? "enabled" : "disabled");
     if (p.gpsEnabled) {
-        result << fmt::sprintf("    GPS lat x long x alt: %f x %f x %f\n",
+        result.appendFormat("    GPS lat x long x alt: %f x %f x %f\n",
                 p.gpsCoordinates[0], p.gpsCoordinates[1],
                 p.gpsCoordinates[2]);
-        result << fmt::sprintf("    GPS timestamp: %" PRId64 "\n",
+        result.appendFormat("    GPS timestamp: %" PRId64 "\n",
                 p.gpsTimestamp);
-        result << fmt::sprintf("    GPS processing method: %s\n",
-                p.gpsProcessingMethod.c_str());
+        result.appendFormat("    GPS processing method: %s\n",
+                p.gpsProcessingMethod.string());
     }
 
-    result << "    White balance mode: ";
+    result.append("    White balance mode: ");
     switch (p.wbMode) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_AWB_MODE_AUTO)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AWB_MODE_INCANDESCENT)
@@ -260,10 +270,10 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AWB_MODE_TWILIGHT)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AWB_MODE_SHADE)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Effect mode: ";
+    result.append("    Effect mode: ");
     switch (p.effectMode) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_EFFECT_MODE_OFF)
         CASE_APPEND_ENUM(ANDROID_CONTROL_EFFECT_MODE_MONO)
@@ -274,22 +284,22 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_EFFECT_MODE_WHITEBOARD)
         CASE_APPEND_ENUM(ANDROID_CONTROL_EFFECT_MODE_BLACKBOARD)
         CASE_APPEND_ENUM(ANDROID_CONTROL_EFFECT_MODE_AQUA)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Antibanding mode: ";
+    result.append("    Antibanding mode: ");
     switch (p.antibandingMode) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_AE_ANTIBANDING_MODE_AUTO)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AE_ANTIBANDING_MODE_50HZ)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AE_ANTIBANDING_MODE_60HZ)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Scene mode: ";
+    result.append("    Scene mode: ");
     switch (p.sceneMode) {
         case ANDROID_CONTROL_SCENE_MODE_DISABLED:
-            result << "AUTO\n"; break;
+            result.append("AUTO\n"); break;
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_FACE_PRIORITY)
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_ACTION)
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_PORTRAIT)
@@ -306,10 +316,10 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_PARTY)
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_CANDLELIGHT)
         CASE_APPEND_ENUM(ANDROID_CONTROL_SCENE_MODE_BARCODE)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Flash mode: ";
+    result.append("    Flash mode: ");
     switch (p.flashMode) {
         CASE_APPEND_ENUM(Parameters::FLASH_MODE_OFF)
         CASE_APPEND_ENUM(Parameters::FLASH_MODE_AUTO)
@@ -317,10 +327,10 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(Parameters::FLASH_MODE_TORCH)
         CASE_APPEND_ENUM(Parameters::FLASH_MODE_RED_EYE)
         CASE_APPEND_ENUM(Parameters::FLASH_MODE_INVALID)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Focus mode: ";
+    result.append("    Focus mode: ");
     switch (p.focusMode) {
         CASE_APPEND_ENUM(Parameters::FOCUS_MODE_AUTO)
         CASE_APPEND_ENUM(Parameters::FOCUS_MODE_MACRO)
@@ -330,10 +340,10 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(Parameters::FOCUS_MODE_INFINITY)
         CASE_APPEND_ENUM(Parameters::FOCUS_MODE_FIXED)
         CASE_APPEND_ENUM(Parameters::FOCUS_MODE_INVALID)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "   Focus state: ";
+    result.append("   Focus state: ");
     switch (p.focusState) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_AF_STATE_INACTIVE)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN)
@@ -342,12 +352,12 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         CASE_APPEND_ENUM(ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED)
         CASE_APPEND_ENUM(ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED)
-        default: result << "UNKNOWN\n";
+        default: result.append("UNKNOWN\n");
     }
 
-    result << "    Focusing areas:\n";
+    result.append("    Focusing areas:\n");
     for (size_t i = 0; i < p.focusingAreas.size(); i++) {
-        result << fmt::sprintf("      [ (%d, %d, %d, %d), weight %d ]\n",
+        result.appendFormat("      [ (%d, %d, %d, %d), weight %d ]\n",
                 p.focusingAreas[i].left,
                 p.focusingAreas[i].top,
                 p.focusingAreas[i].right,
@@ -355,16 +365,16 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
                 p.focusingAreas[i].weight);
     }
 
-    result << fmt::sprintf("    Exposure compensation index: %d\n",
+    result.appendFormat("    Exposure compensation index: %d\n",
             p.exposureCompensation);
 
-    result << fmt::sprintf("    AE lock %s, AWB lock %s\n",
+    result.appendFormat("    AE lock %s, AWB lock %s\n",
             p.autoExposureLock ? "enabled" : "disabled",
             p.autoWhiteBalanceLock ? "enabled" : "disabled" );
 
-    result << "    Metering areas:\n";
+    result.appendFormat("    Metering areas:\n");
     for (size_t i = 0; i < p.meteringAreas.size(); i++) {
-        result << fmt::sprintf("      [ (%d, %d, %d, %d), weight %d ]\n",
+        result.appendFormat("      [ (%d, %d, %d, %d), weight %d ]\n",
                 p.meteringAreas[i].left,
                 p.meteringAreas[i].top,
                 p.meteringAreas[i].right,
@@ -372,56 +382,54 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
                 p.meteringAreas[i].weight);
     }
 
-    result << fmt::sprintf("    Zoom index: %d\n", p.zoom);
-    result << fmt::sprintf("    Video size: %d x %d\n", p.videoWidth,
+    result.appendFormat("    Zoom index: %d\n", p.zoom);
+    result.appendFormat("    Video size: %d x %d\n", p.videoWidth,
             p.videoHeight);
 
-    result << fmt::sprintf("    Recording hint is %s\n",
+    result.appendFormat("    Recording hint is %s\n",
             p.recordingHint ? "set" : "not set");
 
-    result << fmt::sprintf("    Video stabilization is %s\n",
+    result.appendFormat("    Video stabilization is %s\n",
             p.videoStabilization ? "enabled" : "disabled");
 
-    result << fmt::sprintf("    Selected still capture FPS range: %d - %d\n",
+    result.appendFormat("    Selected still capture FPS range: %d - %d\n",
             p.fastInfo.bestStillCaptureFpsRange[0],
             p.fastInfo.bestStillCaptureFpsRange[1]);
 
-    result << fmt::sprintf("    Use zero shutter lag: %s\n",
+    result.appendFormat("    Use zero shutter lag: %s\n",
             p.useZeroShutterLag() ? "yes" : "no");
 
-    result << "  Current streams:\n";
-    result << fmt::sprintf("    Preview stream ID: %d\n",
+    result.append("  Current streams:\n");
+    result.appendFormat("    Preview stream ID: %d\n",
             getPreviewStreamId());
-    result << fmt::sprintf("    Capture stream ID: %d\n",
+    result.appendFormat("    Capture stream ID: %d\n",
             getCaptureStreamId());
-    result << fmt::sprintf("    Recording stream ID: %d\n",
+    result.appendFormat("    Recording stream ID: %d\n",
             getRecordingStreamId());
 
-    result << "  Quirks for this camera:\n";
+    result.append("  Quirks for this camera:\n");
     bool haveQuirk = false;
     if (p.quirks.triggerAfWithAuto) {
-        result << "    triggerAfWithAuto\n";
+        result.appendFormat("    triggerAfWithAuto\n");
         haveQuirk = true;
     }
     if (p.quirks.useZslFormat) {
-        result << "    useZslFormat\n";
+        result.appendFormat("    useZslFormat\n");
         haveQuirk = true;
     }
     if (p.quirks.meteringCropRegion) {
-        result << "    meteringCropRegion\n";
+        result.appendFormat("    meteringCropRegion\n");
         haveQuirk = true;
     }
     if (p.quirks.partialResults) {
-        result << "    usePartialResult\n";
+        result.appendFormat("    usePartialResult\n");
         haveQuirk = true;
     }
     if (!haveQuirk) {
-        result << "    none\n";
+        result.appendFormat("    none\n");
     }
 
-    std::string resultStr = std::move(result.str());
-
-    write(fd, resultStr.c_str(), resultStr.size());
+    write(fd, result.string(), result.size());
 
     mStreamingProcessor->dump(fd, args);
 

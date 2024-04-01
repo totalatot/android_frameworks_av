@@ -25,7 +25,6 @@
 #include <gui/IGraphicBufferProducer.h>
 #include <gui/BufferQueue.h>
 #include <gui/Surface.h>
-#include <camera/StringUtils.h>
 
 #include <ui/GraphicBuffer.h>
 
@@ -93,7 +92,7 @@ status_t Camera3StreamSplitter::connect(const std::unordered_map<size_t, sp<Surf
     if (mBufferItemConsumer == nullptr) {
         return NO_MEMORY;
     }
-    mConsumer->setConsumerName(toString8(mConsumerName));
+    mConsumer->setConsumerName(mConsumerName);
 
     *consumer = new Surface(mProducer);
     if (*consumer == nullptr) {
@@ -182,11 +181,6 @@ status_t Camera3StreamSplitter::addOutput(size_t surfaceId, const sp<Surface>& o
     }
 
     return res;
-}
-
-void Camera3StreamSplitter::setHalBufferManager(bool enabled) {
-    Mutex::Autolock lock(mMutex);
-    mUseHalBufManager = enabled;
 }
 
 status_t Camera3StreamSplitter::addOutputLocked(size_t surfaceId, const sp<Surface>& outputQueue) {
@@ -414,9 +408,9 @@ status_t Camera3StreamSplitter::outputBufferLocked(const sp<IGraphicBufferProduc
     return res;
 }
 
-std::string Camera3StreamSplitter::getUniqueConsumerName() {
+String8 Camera3StreamSplitter::getUniqueConsumerName() {
     static volatile int32_t counter = 0;
-    return fmt::sprintf("Camera3StreamSplitter-%d", android_atomic_inc(&counter));
+    return String8::format("Camera3StreamSplitter-%d", android_atomic_inc(&counter));
 }
 
 status_t Camera3StreamSplitter::notifyBufferReleased(const sp<GraphicBuffer>& buffer) {

@@ -17,8 +17,6 @@
 #ifndef ANDROID_HARDWARE_CAMERA2_OUTPUTCONFIGURATION_H
 #define ANDROID_HARDWARE_CAMERA2_OUTPUTCONFIGURATION_H
 
-#include <string>
-
 #include <gui/IGraphicBufferProducer.h>
 #include <binder/Parcelable.h>
 
@@ -65,7 +63,7 @@ public:
     int32_t                    getColorSpace() const;
     bool                       isDeferred() const;
     bool                       isShared() const;
-    std::string                getPhysicalCameraId() const;
+    String16                   getPhysicalCameraId() const;
     bool                       isMultiResolution() const;
     int64_t                    getStreamUseCase() const;
     int                        getTimestampBase() const;
@@ -92,11 +90,11 @@ public:
     OutputConfiguration(const android::Parcel& parcel);
 
     OutputConfiguration(sp<IGraphicBufferProducer>& gbp, int rotation,
-            const std::string& physicalCameraId,
+            const String16& physicalCameraId,
             int surfaceSetID = INVALID_SET_ID, bool isShared = false);
 
     OutputConfiguration(const std::vector<sp<IGraphicBufferProducer>>& gbps,
-                        int rotation, const std::string& physicalCameraId,
+                        int rotation, const String16& physicalCameraId,
                         int surfaceSetID = INVALID_SET_ID,
                         int surfaceType = OutputConfiguration::SURFACE_TYPE_UNKNOWN, int width = 0,
                         int height = 0, bool isShared = false);
@@ -194,7 +192,7 @@ private:
     int                        mHeight;
     bool                       mIsDeferred;
     bool                       mIsShared;
-    std::string                mPhysicalCameraId;
+    String16                   mPhysicalCameraId;
     bool                       mIsMultiResolution;
     std::vector<int32_t>       mSensorPixelModesUsed;
     int64_t                    mDynamicRangeProfile;

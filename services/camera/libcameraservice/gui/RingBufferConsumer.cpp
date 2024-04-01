@@ -23,13 +23,12 @@
 #include <utils/Log.h>
 
 #include <gui/RingBufferConsumer.h>
-#include <camera/StringUtils.h>
 
-#define BI_LOGV(x, ...) ALOGV("[%s] " x, mName.c_str(), ##__VA_ARGS__)
-#define BI_LOGD(x, ...) ALOGD("[%s] " x, mName.c_str(), ##__VA_ARGS__)
-#define BI_LOGI(x, ...) ALOGI("[%s] " x, mName.c_str(), ##__VA_ARGS__)
-#define BI_LOGW(x, ...) ALOGW("[%s] " x, mName.c_str(), ##__VA_ARGS__)
-#define BI_LOGE(x, ...) ALOGE("[%s] " x, mName.c_str(), ##__VA_ARGS__)
+#define BI_LOGV(x, ...) ALOGV("[%s] " x, mName.string(), ##__VA_ARGS__)
+#define BI_LOGD(x, ...) ALOGD("[%s] " x, mName.string(), ##__VA_ARGS__)
+#define BI_LOGI(x, ...) ALOGI("[%s] " x, mName.string(), ##__VA_ARGS__)
+#define BI_LOGW(x, ...) ALOGW("[%s] " x, mName.string(), ##__VA_ARGS__)
+#define BI_LOGE(x, ...) ALOGE("[%s] " x, mName.string(), ##__VA_ARGS__)
 
 #undef assert
 #define assert(x) ALOG_ASSERT((x), #x)
@@ -54,10 +53,10 @@ RingBufferConsumer::RingBufferConsumer(const sp<IGraphicBufferConsumer>& consume
 RingBufferConsumer::~RingBufferConsumer() {
 }
 
-void RingBufferConsumer::setName(const std::string& name) {
+void RingBufferConsumer::setName(const String8& name) {
     Mutex::Autolock _l(mMutex);
-    mName = toString8(name);
-    mConsumer->setConsumerName(mName);
+    mName = name;
+    mConsumer->setConsumerName(name);
 }
 
 sp<PinnedBufferItem> RingBufferConsumer::pinSelectedBuffer(

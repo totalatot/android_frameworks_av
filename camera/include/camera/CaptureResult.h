@@ -74,7 +74,7 @@ struct CaptureResultExtras : public android::Parcelable {
      * a reference to physical camera device.
      * Empty otherwise.
      */
-    std::string errorPhysicalCameraId;
+    String16  errorPhysicalCameraId;
 
     // The last completed frame numbers shouldn't be checked in onResultReceived() and notifyError()
     // because the output buffers could be arriving after onResultReceived() and
@@ -150,13 +150,13 @@ struct PhysicalCaptureResultInfo : public android::Parcelable {
         : mPhysicalCameraId(),
           mPhysicalCameraMetadata() {
     }
-    PhysicalCaptureResultInfo(const std::string& cameraId,
+    PhysicalCaptureResultInfo(const String16& cameraId,
             const CameraMetadata& cameraMetadata)
             : mPhysicalCameraId(cameraId),
               mPhysicalCameraMetadata(cameraMetadata) {
     }
 
-    std::string mPhysicalCameraId;
+    String16  mPhysicalCameraId;
     CameraMetadata mPhysicalCameraMetadata;
 
     virtual status_t                readFromParcel(const android::Parcel* parcel) override;

@@ -20,7 +20,6 @@
 #include <utils/String16.h>
 
 #include <camera/camera2/ConcurrentCamera.h>
-#include <camera/StringUtils.h>
 
 #include <binder/Parcel.h>
 
@@ -54,7 +53,7 @@ status_t ConcurrentCameraIdCombination::readFromParcel(const android::Parcel* pa
             ALOGE("%s: Failed to read camera id!", __FUNCTION__);
             return err;
         }
-        mConcurrentCameraIds.push_back(toStdString(id));
+        mConcurrentCameraIds.push_back(std::string(String8(id).string()));
     }
     return OK;
 }
@@ -74,7 +73,7 @@ status_t ConcurrentCameraIdCombination::writeToParcel(android::Parcel* parcel) c
     }
 
     for (const auto &it : mConcurrentCameraIds) {
-        if ((err = parcel->writeString16(toString16(it))) != OK) {
+        if ((err = parcel->writeString16(String16(it.c_str()))) != OK) {
             ALOGE("%s: Failed to write the camera id string to parcel: %d", __FUNCTION__, err);
             return err;
         }
@@ -100,7 +99,7 @@ status_t CameraIdAndSessionConfiguration::readFromParcel(const android::Parcel* 
         ALOGE("%s: Failed to read sessionConfiguration!", __FUNCTION__);
         return err;
     }
-    mCameraId = toStdString(id);
+    mCameraId = std::string(String8(id).string());
     return OK;
 }
 
@@ -112,7 +111,7 @@ status_t CameraIdAndSessionConfiguration::writeToParcel(android::Parcel* parcel)
     }
 
     status_t err = OK;
-    if ((err = parcel->writeString16(toString16(mCameraId))) != OK) {
+    if ((err = parcel->writeString16(String16(mCameraId.c_str()))) != OK) {
         ALOGE("%s: Failed to write camera id!", __FUNCTION__);
         return err;
     }

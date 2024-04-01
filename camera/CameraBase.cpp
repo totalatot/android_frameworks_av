@@ -31,7 +31,6 @@
 
 #include <camera/CameraBase.h>
 #include <camera/CameraUtils.h>
-#include <camera/StringUtils.h>
 
 // needed to instantiate
 #include <camera/Camera.h>
@@ -59,7 +58,7 @@ status_t CameraInfo::readFromParcel(const android::Parcel* parcel) {
 }
 
 status_t CameraStatus::writeToParcel(android::Parcel* parcel) const {
-    auto res = parcel->writeString16(toString16(cameraId));
+    auto res = parcel->writeString16(String16(cameraId));
     if (res != OK) return res;
 
     res = parcel->writeInt32(status);
@@ -67,12 +66,12 @@ status_t CameraStatus::writeToParcel(android::Parcel* parcel) const {
 
     std::vector<String16> unavailablePhysicalIds16;
     for (auto& id8 : unavailablePhysicalIds) {
-        unavailablePhysicalIds16.push_back(toString16(id8));
+        unavailablePhysicalIds16.push_back(String16(id8));
     }
     res = parcel->writeString16Vector(unavailablePhysicalIds16);
     if (res != OK) return res;
 
-    res = parcel->writeString16(toString16(clientPackage));
+    res = parcel->writeString16(String16(clientPackage));
     return res;
 }
 
@@ -80,7 +79,7 @@ status_t CameraStatus::readFromParcel(const android::Parcel* parcel) {
     String16 tempCameraId;
     auto res = parcel->readString16(&tempCameraId);
     if (res != OK) return res;
-    cameraId = toString8(tempCameraId);
+    cameraId = String8(tempCameraId);
 
     res = parcel->readInt32(&status);
     if (res != OK) return res;
@@ -89,13 +88,13 @@ status_t CameraStatus::readFromParcel(const android::Parcel* parcel) {
     res = parcel->readString16Vector(&unavailablePhysicalIds16);
     if (res != OK) return res;
     for (auto& id16 : unavailablePhysicalIds16) {
-        unavailablePhysicalIds.push_back(toStdString(id16));
+        unavailablePhysicalIds.push_back(String8(id16));
     }
 
     String16 tempClientPackage;
     res = parcel->readString16(&tempClientPackage);
     if (res != OK) return res;
-    clientPackage = toStdString(tempClientPackage);
+    clientPackage = String8(tempClientPackage);
 
     return res;
 }
@@ -104,6 +103,7 @@ status_t CameraStatus::readFromParcel(const android::Parcel* parcel) {
 
 namespace {
     sp<::android::hardware::ICameraService> gCameraService;
+    const int                 kCameraServicePollDelay = 500000; // 0.5s
     const char*               kCameraServiceName      = "media.camera";
 
     Mutex                     gLock;
@@ -141,10 +141,14 @@ const sp<::android::hardware::ICameraService> CameraBase<TCam, TCamTraits>::getC
 
         sp<IServiceManager> sm = defaultServiceManager();
         sp<IBinder> binder;
-        binder = sm->waitForService(toString16(kCameraServiceName));
-        if (binder == nullptr) {
-            return nullptr;
-        }
+        do {
+            binder = sm->getService(String16(kCameraServiceName));
+            if (binder != 0) {
+                break;
+            }
+            ALOGW("CameraService not published, waiting...");
+            usleep(kCameraServicePollDelay);
+        } while(true);
         if (gDeathNotifier == NULL) {
             gDeathNotifier = new DeathNotifier();
         }
@@ -157,7 +161,7 @@ const sp<::android::hardware::ICameraService> CameraBase<TCam, TCamTraits>::getC
 
 template <typename TCam, typename TCamTraits>
 sp<TCam> CameraBase<TCam, TCamTraits>::connect(int cameraId,
-                                               const std::string& clientPackageName,
+                                               const String16& clientPackageName,
                                                int clientUid, int clientPid, int targetSdkVersion,
                                                bool overrideToPortrait, bool forceSlowJpegMode)
 {
@@ -180,7 +184,7 @@ sp<TCam> CameraBase<TCam, TCamTraits>::connect(int cameraId,
         c->mStatus = NO_ERROR;
     } else {
         ALOGW("An error occurred while connecting to camera %d: %s", cameraId,
-                (cs == nullptr) ? "Service not available" : ret.toString8().c_str());
+                (cs == nullptr) ? "Service not available" : ret.toString8().string());
         c.clear();
     }
     return c;
@@ -265,7 +269,7 @@ int CameraBase<TCam, TCamTraits>::getNumberOfCameras() {
             &count);
     if (!res.isOk()) {
         ALOGE("Error reading number of cameras: %s",
-                res.toString8().c_str());
+                res.toString8().string());
         count = 0;
     }
     return count;

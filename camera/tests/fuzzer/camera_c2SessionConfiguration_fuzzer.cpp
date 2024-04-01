@@ -65,7 +65,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             surface.clear();
         }
         int32_t rotation = fdp.ConsumeIntegral<int32_t>();
-        string physicalCameraId = fdp.ConsumeRandomLengthString();
+        string phyCameraId = fdp.ConsumeRandomLengthString();
+        String16 physicalCameraId(phyCameraId.c_str());
         int32_t surfaceSetID = fdp.ConsumeIntegral<int32_t>();
         bool isShared = fdp.ConsumeBool();
         outputConfiguration =

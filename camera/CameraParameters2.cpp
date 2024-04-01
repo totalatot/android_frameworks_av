@@ -52,14 +52,14 @@ String8 CameraParameters2::flatten() const
             flattened += ";";
     }
 
-    ALOGV("%s: Flattened params = %s", __FUNCTION__, flattened.c_str());
+    ALOGV("%s: Flattened params = %s", __FUNCTION__, flattened.string());
 
     return flattened;
 }
 
 void CameraParameters2::unflatten(const String8 &params)
 {
-    const char *a = params.c_str();
+    const char *a = params.string();
     const char *b;
 
     mMap.clear();
@@ -128,7 +128,7 @@ const char *CameraParameters2::get(const char *key) const
     if (idx < 0) {
         return NULL;
     } else {
-        return mMap.valueAt(idx).c_str();
+        return mMap.valueAt(idx).string();
     }
 }
 
@@ -305,7 +305,7 @@ void CameraParameters2::getPreviewFpsRange(int *min_fps, int *max_fps) const
 void CameraParameters2::setPreviewFpsRange(int min_fps, int max_fps)
 {
     String8 str = String8::format("%d,%d", min_fps, max_fps);
-    set(CameraParameters::KEY_PREVIEW_FPS_RANGE, str.c_str());
+    set(CameraParameters::KEY_PREVIEW_FPS_RANGE, str.string());
 }
 
 void CameraParameters2::setPreviewFormat(const char *format)
@@ -357,7 +357,7 @@ void CameraParameters2::dump() const
         String8 k, v;
         k = mMap.keyAt(i);
         v = mMap.valueAt(i);
-        ALOGD("%s: %s\n", k.c_str(), v.c_str());
+        ALOGD("%s: %s\n", k.string(), v.string());
     }
 }
 
@@ -373,10 +373,10 @@ status_t CameraParameters2::dump(int fd, const Vector<String16>& args) const
         String8 k, v;
         k = mMap.keyAt(i);
         v = mMap.valueAt(i);
-        snprintf(buffer, 255, "\t%s: %s\n", k.c_str(), v.c_str());
+        snprintf(buffer, 255, "\t%s: %s\n", k.string(), v.string());
         result.append(buffer);
     }
-    write(fd, result.c_str(), result.size());
+    write(fd, result.string(), result.size());
     return NO_ERROR;
 }
 

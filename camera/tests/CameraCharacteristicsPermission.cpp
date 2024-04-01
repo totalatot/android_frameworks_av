@@ -62,7 +62,7 @@ void CameraCharacteristicsPermission::TearDown() {
 TEST_F(CameraCharacteristicsPermission, TestCameraPermission) {
     for (int32_t cameraId = 0; cameraId < numCameras; cameraId++) {
 
-        std::string cameraIdStr = std::to_string(cameraId);
+        String16 cameraIdStr = String16(String8::format("%d", cameraId));
         bool isSupported = false;
         auto rc = mCameraService->supportsCameraApi(cameraIdStr,
                 hardware::ICameraService::API_VERSION_2, &isSupported);

@@ -39,7 +39,6 @@ cc_fuzz {
     shared_libs: [
         "libcameraservice",
         "libcamera_client",
-        "camera_platform_flags_c_lib"
     ],
 }
 
@@ -51,7 +50,6 @@ cc_fuzz {
     ],
     shared_libs: [
         "libcameraservice",
-        "camera_platform_flags_c_lib"
     ],
     corpus: ["corpus/*.jpg"],
 }

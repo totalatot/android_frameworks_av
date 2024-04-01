@@ -23,7 +23,6 @@
 #include <utils/Log.h>
 #include <utils/Trace.h>
 #include <utils/Vector.h>
-#include <camera/StringUtils.h>
 
 #include "api1/Camera2Client.h"
 #include "api1/client2/CaptureSequencer.h"
@@ -175,19 +174,19 @@ void CaptureSequencer::onCaptureAvailable(nsecs_t timestamp,
 
 
 void CaptureSequencer::dump(int fd, const Vector<String16>& /*args*/) {
-    std::string result;
+    String8 result;
     if (mCaptureRequest.entryCount() != 0) {
         result = "    Capture request:\n";
-        write(fd, result.c_str(), result.size());
+        write(fd, result.string(), result.size());
         mCaptureRequest.dump(fd, 2, 6);
     } else {
         result = "    Capture request: undefined\n";
-        write(fd, result.c_str(), result.size());
+        write(fd, result.string(), result.size());
     }
-    result = fmt::sprintf("    Current capture state: %s\n",
+    result = String8::format("    Current capture state: %s\n",
             kStateNames[mCaptureState]);
-    result += "    Latest captured frame:\n";
-    write(fd, result.c_str(), result.size());
+    result.append("    Latest captured frame:\n");
+    write(fd, result.string(), result.size());
     mNewFrame.dump(fd, 2, 6);
 }
 

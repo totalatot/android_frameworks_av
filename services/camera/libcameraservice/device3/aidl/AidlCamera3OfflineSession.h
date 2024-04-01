@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 
+#include <utils/String8.h>
 #include <utils/String16.h>
 
 #include "AidlCamera3OutputUtils.h"
@@ -105,7 +106,7 @@ class AidlCamera3OfflineSession :
     };
 
     // initialize by Camera3Device.
-    explicit AidlCamera3OfflineSession(const std::string& id,
+    explicit AidlCamera3OfflineSession(const String8& id,
             const sp<camera3::Camera3Stream>& inputStream,
             const camera3::StreamSet& offlineStreamSet,
             camera3::BufferRecords&& bufferRecords,

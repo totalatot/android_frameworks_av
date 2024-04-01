@@ -21,7 +21,6 @@
 #include <utils/Log.h>
 
 #include <camera/camera2/OutputConfiguration.h>
-#include <camera/StringUtils.h>
 #include <binder/Parcel.h>
 #include <gui/view/Surface.h>
 #include <system/camera_metadata.h>
@@ -66,7 +65,7 @@ bool OutputConfiguration::isShared() const {
     return mIsShared;
 }
 
-std::string OutputConfiguration::getPhysicalCameraId() const {
+String16 OutputConfiguration::getPhysicalCameraId() const {
     return mPhysicalCameraId;
 }
 
@@ -184,9 +183,7 @@ status_t OutputConfiguration::readFromParcel(const android::Parcel* parcel) {
         return err;
     }
 
-    String16 physicalCameraId;
-    parcel->readString16(&physicalCameraId);
-    mPhysicalCameraId = toStdString(physicalCameraId);
+    parcel->readString16(&mPhysicalCameraId);
 
     int isMultiResolution = 0;
     if ((err = parcel->readInt32(&isMultiResolution)) != OK) {
@@ -249,7 +246,7 @@ status_t OutputConfiguration::readFromParcel(const android::Parcel* parcel) {
     for (auto& surface : surfaceShims) {
         ALOGV("%s: OutputConfiguration: %p, name %s", __FUNCTION__,
                 surface.graphicBufferProducer.get(),
-                toString8(surface.name).c_str());
+                String8(surface.name).string());
         mGbps.push_back(surface.graphicBufferProducer);
     }
 
@@ -261,14 +258,14 @@ status_t OutputConfiguration::readFromParcel(const android::Parcel* parcel) {
           " physicalCameraId = %s, isMultiResolution = %d, streamUseCase = %" PRId64
           ", timestampBase = %d, mirrorMode = %d, useReadoutTimestamp = %d",
           __FUNCTION__, mRotation, mSurfaceSetID, mSurfaceType,
-          mPhysicalCameraId.c_str(), mIsMultiResolution, mStreamUseCase, timestampBase,
+          String8(mPhysicalCameraId).string(), mIsMultiResolution, mStreamUseCase, timestampBase,
           mMirrorMode, mUseReadoutTimestamp);
 
     return err;
 }
 
 OutputConfiguration::OutputConfiguration(sp<IGraphicBufferProducer>& gbp, int rotation,
-        const std::string& physicalId,
+        const String16& physicalId,
         int surfaceSetID, bool isShared) {
     mGbps.push_back(gbp);
     mRotation = rotation;
@@ -287,7 +284,7 @@ OutputConfiguration::OutputConfiguration(sp<IGraphicBufferProducer>& gbp, int ro
 
 OutputConfiguration::OutputConfiguration(
         const std::vector<sp<IGraphicBufferProducer>>& gbps,
-    int rotation, const std::string& physicalCameraId, int surfaceSetID,  int surfaceType,
+    int rotation, const String16& physicalCameraId, int surfaceSetID,  int surfaceType,
     int width, int height, bool isShared)
   : mGbps(gbps), mRotation(rotation), mSurfaceSetID(surfaceSetID), mSurfaceType(surfaceType),
     mWidth(width), mHeight(height), mIsDeferred(false), mIsShared(isShared),
@@ -334,8 +331,7 @@ status_t OutputConfiguration::writeToParcel(android::Parcel* parcel) const {
     err = parcel->writeParcelableVector(surfaceShims);
     if (err != OK) return err;
 
-    String16 physicalCameraId = toString16(mPhysicalCameraId);
-    err = parcel->writeString16(physicalCameraId);
+    err = parcel->writeString16(mPhysicalCameraId);
     if (err != OK) return err;
 
     err = parcel->writeInt32(mIsMultiResolution ? 1 : 0);

@@ -28,13 +28,11 @@
 #include "device3/hidl/HidlCamera3Device.h"
 #include "device3/Camera3OutputStream.h"
 #include "system/graphics-base-v1.1.h"
-#include <camera/StringUtils.h>
 #include <ui/PublicFormat.h>
 
 using android::camera3::OutputStreamInfo;
 using android::camera3::OutputStreamInfo;
 using android::hardware::camera2::ICameraDeviceUser;
-using aidl::android::hardware::camera::device::RequestTemplate;
 
 namespace android {
 namespace camera3 {
@@ -461,15 +459,15 @@ bool isStreamUseCaseSupported(int64_t streamUseCase,
 binder::Status createSurfaceFromGbp(
         OutputStreamInfo& streamInfo, bool isStreamInfoValid,
         sp<Surface>& surface, const sp<IGraphicBufferProducer>& gbp,
-        const std::string &logicalCameraId, const CameraMetadata &physicalCameraMetadata,
+        const String8 &logicalCameraId, const CameraMetadata &physicalCameraMetadata,
         const std::vector<int32_t> &sensorPixelModesUsed, int64_t dynamicRangeProfile,
         int64_t streamUseCase, int timestampBase, int mirrorMode,
         int32_t colorSpace, bool isPriviledgedClient) {
     // bufferProducer must be non-null
     if (gbp == nullptr) {
-        std::string msg = fmt::sprintf("Camera %s: Surface is NULL", logicalCameraId.c_str());
-        ALOGW("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s: Surface is NULL", logicalCameraId.string());
+        ALOGW("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     // HACK b/10949105
     // Query consumer usage bits to set async operation mode for
@@ -478,14 +476,14 @@ binder::Status createSurfaceFromGbp(
     uint64_t consumerUsage = 0;
     status_t err;
     if ((err = gbp->getConsumerUsage(&consumerUsage)) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: Failed to query Surface consumer usage: %s (%d)",
-                logicalCameraId.c_str(), strerror(-err), err);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.c_str());
+        String8 msg = String8::format("Camera %s: Failed to query Surface consumer usage: %s (%d)",
+                logicalCameraId.string(), strerror(-err), err);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.string());
     }
     if (consumerUsage & GraphicBuffer::USAGE_HW_TEXTURE) {
         ALOGW("%s: Camera %s with consumer usage flag: %" PRIu64 ": Forcing asynchronous mode for"
-                "stream", __FUNCTION__, logicalCameraId.c_str(), consumerUsage);
+                "stream", __FUNCTION__, logicalCameraId.string(), consumerUsage);
         useAsync = true;
     }
 
@@ -503,38 +501,38 @@ binder::Status createSurfaceFromGbp(
     int width, height, format;
     android_dataspace dataSpace;
     if ((err = anw->query(anw, NATIVE_WINDOW_WIDTH, &width)) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: Failed to query Surface width: %s (%d)",
-                 logicalCameraId.c_str(), strerror(-err), err);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.c_str());
+        String8 msg = String8::format("Camera %s: Failed to query Surface width: %s (%d)",
+                 logicalCameraId.string(), strerror(-err), err);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.string());
     }
     if ((err = anw->query(anw, NATIVE_WINDOW_HEIGHT, &height)) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: Failed to query Surface height: %s (%d)",
-                logicalCameraId.c_str(), strerror(-err), err);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.c_str());
+        String8 msg = String8::format("Camera %s: Failed to query Surface height: %s (%d)",
+                logicalCameraId.string(), strerror(-err), err);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.string());
     }
     if ((err = anw->query(anw, NATIVE_WINDOW_FORMAT, &format)) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: Failed to query Surface format: %s (%d)",
-                logicalCameraId.c_str(), strerror(-err), err);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.c_str());
+        String8 msg = String8::format("Camera %s: Failed to query Surface format: %s (%d)",
+                logicalCameraId.string(), strerror(-err), err);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.string());
     }
     if ((err = anw->query(anw, NATIVE_WINDOW_DEFAULT_DATASPACE,
             reinterpret_cast<int*>(&dataSpace))) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: Failed to query Surface dataspace: %s (%d)",
-                logicalCameraId.c_str(), strerror(-err), err);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.c_str());
+        String8 msg = String8::format("Camera %s: Failed to query Surface dataspace: %s (%d)",
+                logicalCameraId.string(), strerror(-err), err);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_INVALID_OPERATION, msg.string());
     }
 
     if (colorSpace != ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED &&
             format != HAL_PIXEL_FORMAT_BLOB) {
         if (!dataSpaceFromColorSpace(&dataSpace, colorSpace)) {
-            std::string msg = fmt::sprintf("Camera %s: color space %d not supported, failed to "
-                    "convert to data space", logicalCameraId.c_str(), colorSpace);
-            ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+            String8 msg = String8::format("Camera %s: color space %d not supported, failed to "
+                    "convert to data space", logicalCameraId.string(), colorSpace);
+            ALOGE("%s: %s", __FUNCTION__, msg.string());
+            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
         }
     }
 
@@ -544,16 +542,16 @@ binder::Status createSurfaceFromGbp(
             ((consumerUsage & GRALLOC_USAGE_HW_MASK) &&
              ((consumerUsage & GRALLOC_USAGE_SW_READ_MASK) == 0))) {
         ALOGW("%s: Camera %s: Overriding format %#x to IMPLEMENTATION_DEFINED",
-                __FUNCTION__, logicalCameraId.c_str(), format);
+                __FUNCTION__, logicalCameraId.string(), format);
         format = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
     }
     std::unordered_set<int32_t> overriddenSensorPixelModes;
     if (checkAndOverrideSensorPixelModesUsed(sensorPixelModesUsed, format, width, height,
             physicalCameraMetadata, &overriddenSensorPixelModes) != OK) {
-        std::string msg = fmt::sprintf("Camera %s: sensor pixel modes for stream with "
-                "format %#x are not valid",logicalCameraId.c_str(), format);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s: sensor pixel modes for stream with "
+                "format %#x are not valid",logicalCameraId.string(), format);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     bool foundInMaxRes = false;
     if (overriddenSensorPixelModes.find(ANDROID_SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION) !=
@@ -566,58 +564,58 @@ binder::Status createSurfaceFromGbp(
             !SessionConfigurationUtils::roundBufferDimensionNearest(width, height,
             format, dataSpace, physicalCameraMetadata, foundInMaxRes, /*out*/&width,
             /*out*/&height, isPriviledgedClient)) {
-        std::string msg = fmt::sprintf("Camera %s: No supported stream configurations with "
+        String8 msg = String8::format("Camera %s: No supported stream configurations with "
                 "format %#x defined, failed to create output stream",
-                logicalCameraId.c_str(), format);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+                logicalCameraId.string(), format);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (!SessionConfigurationUtils::isDynamicRangeProfileSupported(dynamicRangeProfile,
                 physicalCameraMetadata)) {
-        std::string msg = fmt::sprintf("Camera %s: Dynamic range profile 0x%" PRIx64
-                " not supported,failed to create output stream", logicalCameraId.c_str(),
+        String8 msg = String8::format("Camera %s: Dynamic range profile 0x%" PRIx64
+                " not supported,failed to create output stream", logicalCameraId.string(),
                 dynamicRangeProfile);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (SessionConfigurationUtils::is10bitDynamicRangeProfile(dynamicRangeProfile) &&
             !SessionConfigurationUtils::is10bitCompatibleFormat(format, dataSpace)) {
-        std::string msg = fmt::sprintf("Camera %s: No 10-bit supported stream configurations with "
+        String8 msg = String8::format("Camera %s: No 10-bit supported stream configurations with "
                 "format %#x defined and profile %" PRIx64 ", failed to create output stream",
-                logicalCameraId.c_str(), format, dynamicRangeProfile);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+                logicalCameraId.string(), format, dynamicRangeProfile);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (colorSpace != ANDROID_REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP_UNSPECIFIED &&
             SessionConfigurationUtils::deviceReportsColorSpaces(physicalCameraMetadata) &&
             !SessionConfigurationUtils::isColorSpaceSupported(colorSpace, format, dataSpace,
                     dynamicRangeProfile, physicalCameraMetadata)) {
-        std::string msg = fmt::sprintf("Camera %s: Color space %d not supported, failed to "
+        String8 msg = String8::format("Camera %s: Color space %d not supported, failed to "
                 "create output stream (pixel format %d dynamic range profile %" PRId64 ")",
-                logicalCameraId.c_str(), colorSpace, format, dynamicRangeProfile);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+                logicalCameraId.string(), colorSpace, format, dynamicRangeProfile);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (!SessionConfigurationUtils::isStreamUseCaseSupported(streamUseCase,
             physicalCameraMetadata)) {
-        std::string msg = fmt::sprintf("Camera %s: stream use case %" PRId64 " not supported,"
-                " failed to create output stream", logicalCameraId.c_str(), streamUseCase);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s: stream use case %" PRId64 " not supported,"
+                " failed to create output stream", logicalCameraId.string(), streamUseCase);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (timestampBase < OutputConfiguration::TIMESTAMP_BASE_DEFAULT ||
             timestampBase > OutputConfiguration::TIMESTAMP_BASE_MAX) {
-        std::string msg = fmt::sprintf("Camera %s: invalid timestamp base %d",
-                logicalCameraId.c_str(), timestampBase);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s: invalid timestamp base %d",
+                logicalCameraId.string(), timestampBase);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (mirrorMode < OutputConfiguration::MIRROR_MODE_AUTO ||
             mirrorMode > OutputConfiguration::MIRROR_MODE_V) {
-        std::string msg = fmt::sprintf("Camera %s: invalid mirroring mode %d",
-                logicalCameraId.c_str(), mirrorMode);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s: invalid mirroring mode %d",
+                logicalCameraId.string(), mirrorMode);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
 
     if (!isStreamInfoValid) {
@@ -635,45 +633,45 @@ binder::Status createSurfaceFromGbp(
         return binder::Status::ok();
     }
     if (width != streamInfo.width) {
-        std::string msg = fmt::sprintf("Camera %s:Surface width doesn't match: %d vs %d",
-                logicalCameraId.c_str(), width, streamInfo.width);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s:Surface width doesn't match: %d vs %d",
+                logicalCameraId.string(), width, streamInfo.width);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (height != streamInfo.height) {
-        std::string msg = fmt::sprintf("Camera %s:Surface height doesn't match: %d vs %d",
-                 logicalCameraId.c_str(), height, streamInfo.height);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s:Surface height doesn't match: %d vs %d",
+                 logicalCameraId.string(), height, streamInfo.height);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (format != streamInfo.format) {
-        std::string msg = fmt::sprintf("Camera %s:Surface format doesn't match: %d vs %d",
-                 logicalCameraId.c_str(), format, streamInfo.format);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg = String8::format("Camera %s:Surface format doesn't match: %d vs %d",
+                 logicalCameraId.string(), format, streamInfo.format);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (format != HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
         if (dataSpace != streamInfo.dataSpace) {
-            std::string msg = fmt::sprintf("Camera %s:Surface dataSpace doesn't match: %d vs %d",
-                    logicalCameraId.c_str(), dataSpace, streamInfo.dataSpace);
-            ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+            String8 msg = String8::format("Camera %s:Surface dataSpace doesn't match: %d vs %d",
+                    logicalCameraId.string(), dataSpace, streamInfo.dataSpace);
+            ALOGE("%s: %s", __FUNCTION__, msg.string());
+            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
         }
         //At the native side, there isn't a way to check whether 2 surfaces come from the same
         //surface class type. Use usage flag to approximate the comparison.
         if (consumerUsage != streamInfo.consumerUsage) {
-            std::string msg = fmt::sprintf(
+            String8 msg = String8::format(
                     "Camera %s:Surface usage flag doesn't match %" PRIu64 " vs %" PRIu64 "",
-                    logicalCameraId.c_str(), consumerUsage, streamInfo.consumerUsage);
-            ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+                    logicalCameraId.string(), consumerUsage, streamInfo.consumerUsage);
+            ALOGE("%s: %s", __FUNCTION__, msg.string());
+            return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
         }
     }
     return binder::Status::ok();
 }
 
 void mapStreamInfo(const OutputStreamInfo &streamInfo,
-            camera3::camera_stream_rotation_t rotation, const std::string &physicalId,
+            camera3::camera_stream_rotation_t rotation, String8 physicalId,
             int32_t groupId, aidl::android::hardware::camera::device::Stream *stream /*out*/) {
     if (stream == nullptr) {
         return;
@@ -690,7 +688,7 @@ void mapStreamInfo(const OutputStreamInfo &streamInfo,
     stream->colorSpace = streamInfo.colorSpace;
     stream->rotation = AidlCamera3Device::mapToAidlStreamRotation(rotation);
     stream->id = -1; // Invalid stream id
-    stream->physicalCameraId = physicalId;
+    stream->physicalCameraId = std::string(physicalId.string());
     stream->bufferSize = 0;
     stream->groupId = groupId;
     stream->sensorPixelModesUsed.resize(streamInfo.sensorPixelModesUsed.size());
@@ -711,36 +709,34 @@ void mapStreamInfo(const OutputStreamInfo &streamInfo,
 binder::Status
 convertToHALStreamCombination(
         const SessionConfiguration& sessionConfiguration,
-        const std::string &logicalCameraId, const CameraMetadata &deviceInfo,
+        const String8 &logicalCameraId, const CameraMetadata &deviceInfo,
         bool isCompositeJpegRDisabled,
         metadataGetter getMetadata, const std::vector<std::string> &physicalCameraIds,
         aidl::android::hardware::camera::device::StreamConfiguration &streamConfiguration,
-        bool overrideForPerfClass, metadata_vendor_id_t vendorTagId,
-        bool checkSessionParams, bool *earlyExit, bool isPriviledgedClient) {
+        bool overrideForPerfClass, bool *earlyExit, bool isPriviledgedClient) {
     using SensorPixelMode = aidl::android::hardware::camera::metadata::SensorPixelMode;
     auto operatingMode = sessionConfiguration.getOperatingMode();
-    binder::Status res = checkOperatingMode(operatingMode, deviceInfo,
-            logicalCameraId);
+    binder::Status res = checkOperatingMode(operatingMode, deviceInfo, logicalCameraId);
     if (!res.isOk()) {
         return res;
     }
 
     if (earlyExit == nullptr) {
-        std::string msg("earlyExit nullptr");
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        String8 msg("earlyExit nullptr");
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     *earlyExit = false;
     auto ret = AidlCamera3Device::mapToAidlStreamConfigurationMode(
             static_cast<camera_stream_configuration_mode_t> (operatingMode),
             /*out*/ &streamConfiguration.operationMode);
     if (ret != OK) {
-        std::string msg = fmt::sprintf(
+        String8 msg = String8::format(
             "Camera %s: Failed mapping operating mode %d requested: %s (%d)",
-            logicalCameraId.c_str(), operatingMode, strerror(-ret), ret);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
+            logicalCameraId.string(), operatingMode, strerror(-ret), ret);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT,
-                msg.c_str());
+                msg.string());
     }
 
     bool isInputValid = (sessionConfiguration.getInputWidth() > 0) &&
@@ -785,7 +781,7 @@ convertToHALStreamCombination(
         const std::vector<sp<IGraphicBufferProducer>>& bufferProducers =
             it.getGraphicBufferProducers();
         bool deferredConsumer = it.isDeferred();
-        const std::string &physicalCameraId = it.getPhysicalCameraId();
+        String8 physicalCameraId = String8(it.getPhysicalCameraId());
 
         int64_t dynamicRangeProfile = it.getDynamicRangeProfile();
         int32_t colorSpace = it.getColorSpace();
@@ -877,11 +873,11 @@ convertToHALStreamCombination(
                     }
 
                     if (ret != OK) {
-                        std::string msg = fmt::sprintf(
+                        String8 msg = String8::format(
                                 "Camera %s: Failed adding composite streams: %s (%d)",
-                                logicalCameraId.c_str(), strerror(-ret), ret);
-                        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-                        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+                                logicalCameraId.string(), strerror(-ret), ret);
+                        ALOGE("%s: %s", __FUNCTION__, msg.string());
+                        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
                     }
 
                     if (compositeStreams.size() == 0) {
@@ -909,36 +905,21 @@ convertToHALStreamCombination(
             }
         }
     }
-
-    if (checkSessionParams) {
-        const CameraMetadata &deviceInfo = getMetadata(logicalCameraId,
-                /*overrideForPerfClass*/false);
-        CameraMetadata filteredParams;
-
-        filterParameters(sessionConfiguration.getSessionParameters(), deviceInfo,
-                vendorTagId, filteredParams);
-
-        camera_metadata_t* metadata = const_cast<camera_metadata_t*>(filteredParams.getAndLock());
-        uint8_t *metadataP = reinterpret_cast<uint8_t*>(metadata);
-        streamConfiguration.sessionParams.metadata.assign(metadataP,
-                metadataP + get_camera_metadata_size(metadata));
-    }
-
     return binder::Status::ok();
 }
 
 binder::Status checkPhysicalCameraId(
-        const std::vector<std::string> &physicalCameraIds, const std::string &physicalCameraId,
-        const std::string &logicalCameraId) {
+        const std::vector<std::string> &physicalCameraIds, const String8 &physicalCameraId,
+        const String8 &logicalCameraId) {
     if (physicalCameraId.size() == 0) {
         return binder::Status::ok();
     }
     if (std::find(physicalCameraIds.begin(), physicalCameraIds.end(),
-        physicalCameraId) == physicalCameraIds.end()) {
-        std::string msg = fmt::sprintf("Camera %s: Camera doesn't support physicalCameraId %s.",
-                logicalCameraId.c_str(), physicalCameraId.c_str());
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
-        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.c_str());
+        physicalCameraId.string()) == physicalCameraIds.end()) {
+        String8 msg = String8::format("Camera %s: Camera doesn't support physicalCameraId %s.",
+                logicalCameraId.string(), physicalCameraId.string());
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     return binder::Status::ok();
 }
@@ -966,13 +947,13 @@ binder::Status checkSurfaceType(size_t numBufferProducers,
 }
 
 binder::Status checkOperatingMode(int operatingMode,
-        const CameraMetadata &staticInfo, const std::string &cameraId) {
+        const CameraMetadata &staticInfo, const String8 &cameraId) {
     if (operatingMode < 0) {
-        std::string msg = fmt::sprintf(
-            "Camera %s: Invalid operating mode %d requested", cameraId.c_str(), operatingMode);
-        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
+        String8 msg = String8::format(
+            "Camera %s: Invalid operating mode %d requested", cameraId.string(), operatingMode);
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT,
-                msg.c_str());
+                msg.string());
     }
 
     bool isConstrainedHighSpeed = (operatingMode == ICameraDeviceUser::CONSTRAINED_HIGH_SPEED_MODE);
@@ -987,12 +968,12 @@ binder::Status checkOperatingMode(int operatingMode,
             }
         }
         if (!isConstrainedHighSpeedSupported) {
-            std::string msg = fmt::sprintf(
+            String8 msg = String8::format(
                 "Camera %s: Try to create a constrained high speed configuration on a device"
-                " that doesn't support it.", cameraId.c_str());
-            ALOGE("%s: %s", __FUNCTION__, msg.c_str());
+                " that doesn't support it.", cameraId.string());
+            ALOGE("%s: %s", __FUNCTION__, msg.string());
             return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT,
-                    msg.c_str());
+                    msg.string());
         }
     }
 
@@ -1096,92 +1077,6 @@ bool targetPerfClassPrimaryCamera(
     bool isPerfClassPrimaryCamera =
             perfClassPrimaryCameraIds.find(cameraId) != perfClassPrimaryCameraIds.end();
     return targetSdkVersion >= SDK_VERSION_S && isPerfClassPrimaryCamera;
-}
-
-binder::Status mapRequestTemplateFromClient(const std::string& cameraId, int templateId,
-        camera_request_template_t* tempId /*out*/) {
-    binder::Status ret = binder::Status::ok();
-
-    if (tempId == nullptr) {
-        ret = STATUS_ERROR_FMT(CameraService::ERROR_ILLEGAL_ARGUMENT,
-                "Camera %s: Invalid template argument", cameraId.c_str());
-        return ret;
-    }
-    switch(templateId) {
-        case ICameraDeviceUser::TEMPLATE_PREVIEW:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_PREVIEW;
-            break;
-        case ICameraDeviceUser::TEMPLATE_RECORD:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_VIDEO_RECORD;
-            break;
-        case ICameraDeviceUser::TEMPLATE_STILL_CAPTURE:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_STILL_CAPTURE;
-            break;
-        case ICameraDeviceUser::TEMPLATE_VIDEO_SNAPSHOT:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_VIDEO_SNAPSHOT;
-            break;
-        case ICameraDeviceUser::TEMPLATE_ZERO_SHUTTER_LAG:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_ZERO_SHUTTER_LAG;
-            break;
-        case ICameraDeviceUser::TEMPLATE_MANUAL:
-            *tempId = camera_request_template_t::CAMERA_TEMPLATE_MANUAL;
-            break;
-        default:
-            ret = STATUS_ERROR_FMT(CameraService::ERROR_ILLEGAL_ARGUMENT,
-                    "Camera %s: Template ID %d is invalid or not supported",
-                    cameraId.c_str(), templateId);
-            return ret;
-    }
-
-    return ret;
-}
-
-status_t mapRequestTemplateToAidl(camera_request_template_t templateId,
-        RequestTemplate* id /*out*/) {
-    switch (templateId) {
-        case CAMERA_TEMPLATE_PREVIEW:
-            *id = RequestTemplate::PREVIEW;
-            break;
-        case CAMERA_TEMPLATE_STILL_CAPTURE:
-            *id = RequestTemplate::STILL_CAPTURE;
-            break;
-        case CAMERA_TEMPLATE_VIDEO_RECORD:
-            *id = RequestTemplate::VIDEO_RECORD;
-            break;
-        case CAMERA_TEMPLATE_VIDEO_SNAPSHOT:
-            *id = RequestTemplate::VIDEO_SNAPSHOT;
-            break;
-        case CAMERA_TEMPLATE_ZERO_SHUTTER_LAG:
-            *id = RequestTemplate::ZERO_SHUTTER_LAG;
-            break;
-        case CAMERA_TEMPLATE_MANUAL:
-            *id = RequestTemplate::MANUAL;
-            break;
-        default:
-            // Unknown template ID, or this HAL is too old to support it
-            return BAD_VALUE;
-    }
-    return OK;
-}
-
-void filterParameters(const CameraMetadata& src, const CameraMetadata& deviceInfo,
-        metadata_vendor_id_t vendorTagId, CameraMetadata& dst) {
-    const CameraMetadata params(src);
-    camera_metadata_ro_entry_t availableSessionKeys = deviceInfo.find(
-            ANDROID_REQUEST_AVAILABLE_SESSION_KEYS);
-    CameraMetadata filteredParams(availableSessionKeys.count);
-    camera_metadata_t *meta = const_cast<camera_metadata_t *>(
-            filteredParams.getAndLock());
-    set_camera_metadata_vendor_id(meta, vendorTagId);
-    filteredParams.unlock(meta);
-    for (size_t i = 0; i < availableSessionKeys.count; i++) {
-        camera_metadata_ro_entry entry = params.find(
-                availableSessionKeys.data.i32[i]);
-        if (entry.count > 0) {
-            filteredParams.update(entry);
-        }
-    }
-    dst = std::move(filteredParams);
 }
 
 } // namespace SessionConfigurationUtils

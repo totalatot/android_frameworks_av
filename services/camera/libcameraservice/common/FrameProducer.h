@@ -18,6 +18,7 @@
 #define ANDROID_SERVERS_CAMERA_FRAMEPRODUCER_H
 
 #include <utils/RefBase.h>
+#include <utils/String8.h>
 #include <utils/Timers.h>
 
 #include "camera/CameraMetadata.h"
@@ -38,7 +39,7 @@ class FrameProducer : public virtual RefBase {
     /**
      * Retrieve the device camera ID
      */
-    virtual const std::string& getId() const = 0;
+    virtual const String8& getId() const = 0;
 
     /**
      * Wait for a new frame to be produced, with timeout in nanoseconds.

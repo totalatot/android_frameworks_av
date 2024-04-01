@@ -27,7 +27,6 @@
 #include <camera/CameraParameters.h>
 #include <camera/CameraMetadata.h>
 #include <camera/Camera.h>
-#include <camera/StringUtils.h>
 #include <android/hardware/ICameraService.h>
 
 using namespace android;
@@ -170,7 +169,7 @@ TEST_F(CameraZSLTests, TestAllPictureSizes) {
         sp<SurfaceControl> surfaceControl;
         sp<ICamera> cameraDevice;
 
-        std::string cameraIdStr = std::to_string(cameraId);
+        String16 cameraIdStr = String16(String8::format("%d", cameraId));
         bool isSupported = false;
         rc = mCameraService->supportsCameraApi(cameraIdStr,
                 hardware::ICameraService::API_VERSION_1, &isSupported);
@@ -209,7 +208,7 @@ TEST_F(CameraZSLTests, TestAllPictureSizes) {
         }
 
         rc = mCameraService->connect(this, cameraId,
-                "ZSLTest", hardware::ICameraService::USE_CALLING_UID,
+                String16("ZSLTest"), hardware::ICameraService::USE_CALLING_UID,
                 hardware::ICameraService::USE_CALLING_PID,
                 /*targetSdkVersion*/__ANDROID_API_FUTURE__,
                 /*overrideToPortrait*/false, /*forceSlowJpegMode*/false, &cameraDevice);
