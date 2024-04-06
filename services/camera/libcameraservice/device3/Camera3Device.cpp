@@ -242,7 +242,7 @@ status_t Camera3Device::initialize(sp<CameraProviderManager> manager, const Stri
     std::string providerType;
     mVendorTagId = manager->getProviderTagIdLocked(mId.c_str());
     mTagMonitor.initialize(mVendorTagId);
-    if (!monitorTags.isEmpty()) {
+    if (!monitorTags.empty()) {
         mTagMonitor.parseTagsToMonitor(String8(monitorTags));
     }
 
@@ -863,7 +863,7 @@ const CameraMetadata& Camera3Device::infoPhysical(const String8& physicalId) con
                 mStatus == STATUS_ERROR ?
                 "when in error state" : "before init");
     }
-    if (physicalId.isEmpty()) {
+    if (physicalId.empty()) {
         return mDeviceInfo;
     } else {
         std::string id(physicalId.c_str());
@@ -5133,7 +5133,7 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
                     // to physical output/outputs
                     bool singleRequest = captureRequest->mSettingsList.size() == 1;
                     for (const auto& settings : captureRequest->mSettingsList) {
-                        if (((streamCameraId.isEmpty() || singleRequest) &&
+                        if (((streamCameraId.empty() || singleRequest) &&
                                 parent->getId() == settings.cameraId.c_str()) ||
                                 streamCameraId == settings.cameraId.c_str()) {
                             outputStream->fireBufferRequestForFrameNumber(
@@ -5148,7 +5148,7 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
             int32_t streamGroupId = outputStream->getHalStreamGroupId();
             if (streamGroupId != -1 && mGroupIdPhysicalCameraMap.count(streamGroupId) == 1) {
                 requestedPhysicalCameras.insert(mGroupIdPhysicalCameraMap[streamGroupId]);
-            } else if (!physicalCameraId.isEmpty()) {
+            } else if (!physicalCameraId.empty()) {
                 requestedPhysicalCameras.insert(std::set<String8>({physicalCameraId}));
             }
             halRequest->num_output_buffers++;
