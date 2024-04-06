@@ -176,7 +176,7 @@ status_t OutputConfiguration::readFromParcel(const android::Parcel* parcel) {
     for (auto& surface : surfaceShims) {
         ALOGV("%s: OutputConfiguration: %p, name %s", __FUNCTION__,
                 surface.graphicBufferProducer.get(),
-                String8(surface.name).string());
+                String8(surface.name).c_str());
         mGbps.push_back(surface.graphicBufferProducer);
     }
 
@@ -184,7 +184,7 @@ status_t OutputConfiguration::readFromParcel(const android::Parcel* parcel) {
 
     ALOGV("%s: OutputConfiguration: rotation = %d, setId = %d, surfaceType = %d,"
           " physicalCameraId = %s, isMultiResolution = %d", __FUNCTION__, mRotation,
-          mSurfaceSetID, mSurfaceType, String8(mPhysicalCameraId).string(), mIsMultiResolution);
+          mSurfaceSetID, mSurfaceType, String8(mPhysicalCameraId).c_str(), mIsMultiResolution);
 
     return err;
 }

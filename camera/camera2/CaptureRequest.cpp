@@ -74,7 +74,7 @@ status_t CaptureRequest::readFromParcel(const android::Parcel* parcel) {
             return err;
         }
         ALOGV("%s: Read metadata from parcel", __FUNCTION__);
-        mPhysicalCameraSettings.push_back({std::string(String8(id).string()), settings});
+        mPhysicalCameraSettings.push_back({std::string(String8(id).c_str()), settings});
     }
 
     int isReprocess = 0;

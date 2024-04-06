@@ -60,7 +60,7 @@ status_t Camera3Device::Camera3DeviceInjectionMethods::injectionInitialize(
     mInjectedCamId = injectedCamId;
     sp<ICameraDeviceSession> session;
     ATRACE_BEGIN("Injection CameraHal::openSession");
-    status_t res = manager->openSession(injectedCamId.string(), callback,
+    status_t res = manager->openSession(injectedCamId.c_str(), callback,
                                           /*out*/ &session);
     ATRACE_END();
     if (res != OK) {
@@ -280,7 +280,7 @@ status_t Camera3Device::Camera3DeviceInjectionMethods::injectionConfigureStreams
 
     // Start configuring the streams
     ALOGV("%s: Injection camera %s: Starting stream configuration", __FUNCTION__,
-            mInjectedCamId.string());
+            mInjectedCamId.c_str());
 
     parent->mPreparerThread->pause();
 
@@ -323,13 +323,13 @@ status_t Camera3Device::Camera3DeviceInjectionMethods::injectionConfigureStreams
     parent->internalUpdateStatusLocked(STATUS_CONFIGURED);
 
     ALOGV("%s: Injection camera %s: Stream configuration complete", __FUNCTION__,
-            mInjectedCamId.string());
+            mInjectedCamId.c_str());
 
     auto rc = parent->mPreparerThread->resume();
 
     if (rc != OK) {
         ALOGE("%s: Injection camera %s: Preparer thread failed to resume!",
-                 __FUNCTION__, mInjectedCamId.string());
+                 __FUNCTION__, mInjectedCamId.c_str());
         return rc;
     }
 

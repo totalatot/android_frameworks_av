@@ -53,7 +53,7 @@ status_t ConcurrentCameraIdCombination::readFromParcel(const android::Parcel* pa
             ALOGE("%s: Failed to read camera id!", __FUNCTION__);
             return err;
         }
-        mConcurrentCameraIds.push_back(std::string(String8(id).string()));
+        mConcurrentCameraIds.push_back(std::string(String8(id).c_str()));
     }
     return OK;
 }
@@ -99,7 +99,7 @@ status_t CameraIdAndSessionConfiguration::readFromParcel(const android::Parcel* 
         ALOGE("%s: Failed to read sessionConfiguration!", __FUNCTION__);
         return err;
     }
-    mCameraId = std::string(String8(id).string());
+    mCameraId = std::string(String8(id).c_str());
     return OK;
 }
 

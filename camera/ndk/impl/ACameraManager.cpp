@@ -166,7 +166,7 @@ sp<hardware::ICameraService> CameraManagerGlobal::getCameraServiceLocked() {
                 } else {
                     VendorTagDescriptorCache::clearGlobalVendorTagCache();
                     ALOGE("%s: Failed to setup vendor tag cache: %s",
-                            __FUNCTION__, res.toString8().string());
+                            __FUNCTION__, res.toString8().c_str());
                 }
             }
         } else if (ret.serviceSpecificErrorCode() ==
@@ -176,7 +176,7 @@ sp<hardware::ICameraService> CameraManagerGlobal::getCameraServiceLocked() {
             VendorTagDescriptor::clearGlobalVendorTagDescriptor();
         } else {
             ALOGE("%s: Failed to get vendor tag descriptors: %s",
-                    __FUNCTION__, ret.toString8().string());
+                    __FUNCTION__, ret.toString8().c_str());
         }
     }
     ALOGE_IF(mCameraService == nullptr, "no CameraService!?");
@@ -564,7 +564,7 @@ void CameraManagerGlobal::onStatusChangedLocked(
     if (logicalCamStatus != hardware::ICameraServiceListener::STATUS_PRESENT &&
             logicalCamStatus != hardware::ICameraServiceListener::STATUS_NOT_AVAILABLE) {
         ALOGE("%s: Physical camera id %s status %d change for an invalid logical camera state %d",
-                __FUNCTION__, physicalCameraId.string(), status, logicalCamStatus);
+                __FUNCTION__, physicalCameraId.c_str(), status, logicalCamStatus);
         return;
     }
 
@@ -649,7 +649,7 @@ ACameraManager::getCameraIdList(ACameraIdList** cameraIdList) {
         return ACAMERA_ERROR_NOT_ENOUGH_MEMORY;
     }
     for (int i = 0; i < numCameras; i++) {
-        const char* src = idList[i].string();
+        const char* src = idList[i].c_str();
         size_t dstSize = strlen(src) + 1;
         char* dst = new char[dstSize];
         if (!dst) {
@@ -702,7 +702,7 @@ camera_status_t ACameraManager::getCameraCharacteristics(
                 return ACAMERA_ERROR_INVALID_PARAMETER;
             default:
                 ALOGE("Get camera characteristics from camera service failed: %s",
-                        serviceRet.toString8().string());
+                        serviceRet.toString8().c_str());
                 return ACAMERA_ERROR_UNKNOWN; // should not reach here
         }
     }
@@ -746,7 +746,7 @@ ACameraManager::openCamera(
             targetSdkVersion, /*out*/&deviceRemote);
 
     if (!serviceRet.isOk()) {
-        ALOGE("%s: connect camera device failed: %s", __FUNCTION__, serviceRet.toString8().string());
+        ALOGE("%s: connect camera device failed: %s", __FUNCTION__, serviceRet.toString8().c_str());
         // Convert serviceRet to camera_status_t
         switch(serviceRet.serviceSpecificErrorCode()) {
             case hardware::ICameraService::ERROR_DISCONNECTED:

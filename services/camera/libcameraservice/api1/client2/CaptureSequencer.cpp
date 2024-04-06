@@ -177,16 +177,16 @@ void CaptureSequencer::dump(int fd, const Vector<String16>& /*args*/) {
     String8 result;
     if (mCaptureRequest.entryCount() != 0) {
         result = "    Capture request:\n";
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         mCaptureRequest.dump(fd, 2, 6);
     } else {
         result = "    Capture request: undefined\n";
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
     }
     result = String8::format("    Current capture state: %s\n",
             kStateNames[mCaptureState]);
     result.append("    Latest captured frame:\n");
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
     mNewFrame.dump(fd, 2, 6);
 }
 

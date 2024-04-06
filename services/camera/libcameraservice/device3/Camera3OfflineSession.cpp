@@ -77,12 +77,12 @@ Camera3OfflineSession::Camera3OfflineSession(const String8 &id,
         mRotateAndCropMappers(offlineStates.mRotateAndCropMappers),
         mStatus(STATUS_UNINITIALIZED) {
     ATRACE_CALL();
-    ALOGV("%s: Created offline session for camera %s", __FUNCTION__, mId.string());
+    ALOGV("%s: Created offline session for camera %s", __FUNCTION__, mId.c_str());
 }
 
 Camera3OfflineSession::~Camera3OfflineSession() {
     ATRACE_CALL();
-    ALOGV("%s: Tearing down offline session for camera id %s", __FUNCTION__, mId.string());
+    ALOGV("%s: Tearing down offline session for camera id %s", __FUNCTION__, mId.c_str());
     disconnectImpl();
 }
 
@@ -149,7 +149,7 @@ status_t Camera3OfflineSession::disconnectImpl() {
             return OK; // don't close twice
         } else if (mStatus == STATUS_ERROR) {
             ALOGE("%s: offline session %s shutting down in error state",
-                    __FUNCTION__, mId.string());
+                    __FUNCTION__, mId.c_str());
         }
         listener = mListener.promote();
     }
@@ -403,7 +403,7 @@ void Camera3OfflineSession::setErrorStateLocked(const char *fmt, ...) {
 void Camera3OfflineSession::setErrorStateLockedV(const char *fmt, va_list args) {
     // Print out all error messages to log
     String8 errorCause = String8::formatV(fmt, args);
-    ALOGE("Camera %s: %s", mId.string(), errorCause.string());
+    ALOGE("Camera %s: %s", mId.c_str(), errorCause.c_str());
 
     // But only do error state transition steps for the first error
     if (mStatus == STATUS_ERROR || mStatus == STATUS_UNINITIALIZED) return;

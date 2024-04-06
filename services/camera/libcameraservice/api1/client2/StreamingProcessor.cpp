@@ -590,7 +590,7 @@ status_t StreamingProcessor::dump(int fd, const Vector<String16>& /*args*/) {
     result.append("  Current requests:\n");
     if (mPreviewRequest.entryCount() != 0) {
         result.append("    Preview request:\n");
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         mPreviewRequest.dump(fd, 2, 6);
         result.clear();
     } else {
@@ -599,7 +599,7 @@ status_t StreamingProcessor::dump(int fd, const Vector<String16>& /*args*/) {
 
     if (mRecordingRequest.entryCount() != 0) {
         result = "    Recording request:\n";
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         mRecordingRequest.dump(fd, 2, 6);
         result.clear();
     } else {
@@ -613,7 +613,7 @@ status_t StreamingProcessor::dump(int fd, const Vector<String16>& /*args*/) {
                                   streamTypeString[mActiveRequest],
                                   mPaused ? "yes" : "no"));
 
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
 
     return OK;
 }

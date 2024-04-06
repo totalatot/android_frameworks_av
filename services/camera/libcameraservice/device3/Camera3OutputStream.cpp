@@ -395,8 +395,8 @@ void Camera3OutputStream::dump(int fd, const Vector<String16> &args) const {
     (void) args;
     String8 lines;
     lines.appendFormat("    Stream[%d]: Output\n", mId);
-    lines.appendFormat("      Consumer name: %s\n", mConsumerName.string());
-    write(fd, lines.string(), lines.size());
+    lines.appendFormat("      Consumer name: %s\n", mConsumerName.c_str());
+    write(fd, lines.c_str(), lines.size());
 
     Camera3IOStreamBase::dump(fd, args);
 

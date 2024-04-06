@@ -572,9 +572,9 @@ void Camera2Fuzzer::process() {
                     kSensorPixelModes[mFuzzedDataProvider->ConsumeBool() ? 1 : 0];
             requestTemplate.update(ANDROID_SENSOR_PIXEL_MODE, &sensorPixelMode, 1);
             request.mPhysicalCameraSettings.clear();
-            request.mPhysicalCameraSettings.push_back({s.cameraId.string(), requestTemplate});
+            request.mPhysicalCameraSettings.push_back({s.cameraId.c_str(), requestTemplate});
             device->submitRequest(request, /*streaming*/false, /*out*/&info);
-            ALOGV("%s : camera id %s submit request id %d",__FUNCTION__, s.cameraId.string(),
+            ALOGV("%s : camera id %s submit request id %d",__FUNCTION__, s.cameraId.c_str(),
                     info.mRequestId);
         }
         device->disconnect();

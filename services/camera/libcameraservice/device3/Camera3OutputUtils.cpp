@@ -366,7 +366,7 @@ void sendCaptureResult(
 
     std::unordered_map<std::string, CameraMetadata> monitoredPhysicalMetadata;
     for (auto& m : physicalMetadatas) {
-        monitoredPhysicalMetadata.emplace(String8(m.mPhysicalCameraId).string(),
+        monitoredPhysicalMetadata.emplace(String8(m.mPhysicalCameraId).c_str(),
                 CameraMetadata(m.mPhysicalCameraMetadata));
     }
     states.tagMonitor.monitorMetadata(TagMonitor::RESULT,
@@ -1037,7 +1037,7 @@ void notifyShutter(CaptureOutputStates& states, const camera_shutter_msg_t &msg)
             r.shutterTimestamp = msg.timestamp;
             if (r.hasCallback) {
                 ALOGVV("Camera %s: %s: Shutter fired for frame %d (id %d) at %" PRId64,
-                    states.cameraId.string(), __FUNCTION__,
+                    states.cameraId.c_str(), __FUNCTION__,
                     msg.frame_number, r.resultExtras.requestId, msg.timestamp);
                 // Call listener, if any
                 if (states.listener != nullptr) {
@@ -1100,7 +1100,7 @@ void notifyError(CaptureOutputStates& states, const camera_error_msg_t &msg) {
         physicalCameraId = String16(stream->physicalCameraId());
     }
     ALOGV("Camera %s: %s: HAL error, frame %d, stream %d: %d",
-            states.cameraId.string(), __FUNCTION__, msg.frame_number,
+            states.cameraId.c_str(), __FUNCTION__, msg.frame_number,
             streamId, msg.error_code);
 
     CaptureResultExtras resultExtras;
@@ -1128,7 +1128,7 @@ void notifyError(CaptureOutputStates& states, const camera_error_msg_t &msg) {
                             if (!validPhysicalCameraId) {
                                 ALOGE("%s: Reported result failure for physical camera device: %s "
                                         " which is not part of the respective request!",
-                                        __FUNCTION__, cameraId.string());
+                                        __FUNCTION__, cameraId.c_str());
                                 break;
                             }
                             resultExtras.errorPhysicalCameraId = physicalCameraId;
@@ -1153,7 +1153,7 @@ void notifyError(CaptureOutputStates& states, const camera_error_msg_t &msg) {
                 } else {
                     resultExtras.frameNumber = msg.frame_number;
                     ALOGE("Camera %s: %s: cannot find in-flight request on "
-                            "frame %" PRId64 " error", states.cameraId.string(), __FUNCTION__,
+                            "frame %" PRId64 " error", states.cameraId.c_str(), __FUNCTION__,
                             resultExtras.frameNumber);
                 }
             }
@@ -1162,7 +1162,7 @@ void notifyError(CaptureOutputStates& states, const camera_error_msg_t &msg) {
                 states.listener->notifyError(errorCode, resultExtras);
             } else {
                 ALOGE("Camera %s: %s: no listener available",
-                        states.cameraId.string(), __FUNCTION__);
+                        states.cameraId.c_str(), __FUNCTION__);
             }
             break;
         case hardware::camera2::ICameraDeviceCallbacks::ERROR_CAMERA_BUFFER:
@@ -1253,7 +1253,7 @@ void requestStreamBuffers(RequestBufferStates& states,
     hardware::hidl_vec<StreamBufferRet> bufRets;
     if (!states.useHalBufManager) {
         ALOGE("%s: Camera %s does not support HAL buffer management",
-                __FUNCTION__, states.cameraId.string());
+                __FUNCTION__, states.cameraId.c_str());
         _hidl_cb(BufferRequestStatus::FAILED_ILLEGAL_ARGUMENTS, bufRets);
         return;
     }
@@ -1435,7 +1435,7 @@ void returnStreamBuffers(ReturnBufferStates& states,
         const hardware::hidl_vec<hardware::camera::device::V3_2::StreamBuffer>& buffers) {
     if (!states.useHalBufManager) {
         ALOGE("%s: Camera %s does not support HAL buffer managerment",
-                __FUNCTION__, states.cameraId.string());
+                __FUNCTION__, states.cameraId.c_str());
         return;
     }
 

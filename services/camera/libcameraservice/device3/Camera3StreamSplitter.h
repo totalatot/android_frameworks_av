@@ -28,10 +28,10 @@
 #include <utils/StrongPointer.h>
 #include <utils/Timers.h>
 
-#define SP_LOGV(x, ...) ALOGV("[%s] " x, mConsumerName.string(), ##__VA_ARGS__)
-#define SP_LOGI(x, ...) ALOGI("[%s] " x, mConsumerName.string(), ##__VA_ARGS__)
-#define SP_LOGW(x, ...) ALOGW("[%s] " x, mConsumerName.string(), ##__VA_ARGS__)
-#define SP_LOGE(x, ...) ALOGE("[%s] " x, mConsumerName.string(), ##__VA_ARGS__)
+#define SP_LOGV(x, ...) ALOGV("[%s] " x, mConsumerName.c_str(), ##__VA_ARGS__)
+#define SP_LOGI(x, ...) ALOGI("[%s] " x, mConsumerName.c_str(), ##__VA_ARGS__)
+#define SP_LOGW(x, ...) ALOGW("[%s] " x, mConsumerName.c_str(), ##__VA_ARGS__)
+#define SP_LOGE(x, ...) ALOGE("[%s] " x, mConsumerName.c_str(), ##__VA_ARGS__)
 
 namespace android {
 

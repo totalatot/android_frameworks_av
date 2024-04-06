@@ -124,34 +124,34 @@ status_t Camera2Client::initializeImpl(TProviderPtr providerPtr, const String8& 
     mFrameProcessor = new FrameProcessor(mDevice, this);
     threadName = String8::format("C2-%d-FrameProc",
             mCameraId);
-    mFrameProcessor->run(threadName.string());
+    mFrameProcessor->run(threadName.c_str());
 
     mCaptureSequencer = new CaptureSequencer(this);
     threadName = String8::format("C2-%d-CaptureSeq",
             mCameraId);
-    mCaptureSequencer->run(threadName.string());
+    mCaptureSequencer->run(threadName.c_str());
 
     mJpegProcessor = new JpegProcessor(this, mCaptureSequencer);
     threadName = String8::format("C2-%d-JpegProc",
             mCameraId);
-    mJpegProcessor->run(threadName.string());
+    mJpegProcessor->run(threadName.c_str());
 
     mZslProcessor = new ZslProcessor(this, mCaptureSequencer);
 
     threadName = String8::format("C2-%d-ZslProc",
             mCameraId);
-    mZslProcessor->run(threadName.string());
+    mZslProcessor->run(threadName.c_str());
 
     mCallbackProcessor = new CallbackProcessor(this);
     threadName = String8::format("C2-%d-CallbkProc",
             mCameraId);
-    mCallbackProcessor->run(threadName.string());
+    mCallbackProcessor->run(threadName.c_str());
 
     if (gLogLevel >= 1) {
         SharedParameters::Lock l(mParameters);
         ALOGD("%s: Default parameters converted from camera %d:", __FUNCTION__,
               mCameraId);
-        ALOGD("%s", l.mParameters.paramsFlattened.string());
+        ALOGD("%s", l.mParameters.paramsFlattened.c_str());
     }
 
     return OK;
@@ -210,7 +210,7 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         result.appendFormat("    GPS timestamp: %" PRId64 "\n",
                 p.gpsTimestamp);
         result.appendFormat("    GPS processing method: %s\n",
-                p.gpsProcessingMethod.string());
+                p.gpsProcessingMethod.c_str());
     }
 
     result.append("    White balance mode: ");
@@ -382,7 +382,7 @@ status_t Camera2Client::dumpClient(int fd, const Vector<String16>& args) {
         result.appendFormat("    none\n");
     }
 
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
 
     mStreamingProcessor->dump(fd, args);
 

@@ -85,7 +85,7 @@ Camera3Stream::Camera3Stream(int id,
     camera_stream::data_space = dataSpace;
     camera_stream::rotation = rotation;
     camera_stream::max_buffers = 0;
-    camera_stream::physical_camera_id = mPhysicalCameraId.string();
+    camera_stream::physical_camera_id = mPhysicalCameraId.c_str();
     camera_stream::sensor_pixel_modes_used = sensorPixelModesUsed;
 
     if ((format == HAL_PIXEL_FORMAT_BLOB || format == HAL_PIXEL_FORMAT_RAW_OPAQUE) &&

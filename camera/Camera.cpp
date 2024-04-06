@@ -127,7 +127,7 @@ status_t Camera::connectLegacy(int cameraId, int halVersion,
             default:
                 status = -EINVAL;
                 ALOGW("An error occurred while connecting to camera %d: %s", cameraId,
-                        (cs != nullptr) ? "Service not available" : ret.toString8().string());
+                        (cs != nullptr) ? "Service not available" : ret.toString8().c_str());
                 break;
         }
         c.clear();

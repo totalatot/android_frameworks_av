@@ -681,11 +681,11 @@ void ZslProcessor::dump(int fd, const Vector<String16>& /*args*/) const {
     Mutex::Autolock l(mInputMutex);
     if (!mLatestCapturedRequest.isEmpty()) {
         String8 result("    Latest ZSL capture request:\n");
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         mLatestCapturedRequest.dump(fd, 2, 6);
     } else {
         String8 result("    Latest ZSL capture request: none yet\n");
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
     }
     dumpZslQueue(fd);
 }
@@ -708,10 +708,10 @@ bool ZslProcessor::threadLoop() {
 void ZslProcessor::dumpZslQueue(int fd) const {
     String8 header("ZSL queue contents:");
     String8 indent("    ");
-    ALOGV("%s", header.string());
+    ALOGV("%s", header.c_str());
     if (fd != -1) {
         header = indent + header + "\n";
-        write(fd, header.string(), header.size());
+        write(fd, header.c_str(), header.size());
     }
     for (size_t i = 0; i < mZslQueue.size(); i++) {
         const ZslPair &queueEntry = mZslQueue[i];
@@ -728,10 +728,10 @@ void ZslProcessor::dumpZslQueue(int fd) const {
         String8 result =
                 String8::format("   %zu: b: %" PRId64 "\tf: %" PRId64 ", AE state: %d", i,
                         bufferTimestamp, frameTimestamp, frameAeState);
-        ALOGV("%s", result.string());
+        ALOGV("%s", result.c_str());
         if (fd != -1) {
             result = indent + result + "\n";
-            write(fd, result.string(), result.size());
+            write(fd, result.c_str(), result.size());
         }
 
     }

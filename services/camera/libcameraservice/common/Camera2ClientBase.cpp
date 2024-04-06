@@ -65,8 +65,8 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         mDevice(new Camera3Device(cameraId, overrideForPerfClass, legacyClient)),
         mDeviceActive(false), mApi1CameraId(api1CameraId)
 {
-    ALOGI("Camera %s: Opened. Client: %s (PID %d, UID %d)", cameraId.string(),
-            String8(clientPackageName).string(), clientPid, clientUid);
+    ALOGI("Camera %s: Opened. Client: %s (PID %d, UID %d)", cameraId.c_str(),
+            String8(clientPackageName).c_str(), clientPid, clientUid);
 
     mInitialClientPid = clientPid;
     LOG_ALWAYS_FATAL_IF(mDevice == 0, "Device should never be NULL here.");
@@ -96,7 +96,7 @@ status_t Camera2ClientBase<TClientBase>::initializeImpl(TProviderPtr providerPtr
         const String8& monitorTags) {
     ATRACE_CALL();
     ALOGV("%s: Initializing client for camera %s", __FUNCTION__,
-          TClientBase::mCameraIdStr.string());
+          TClientBase::mCameraIdStr.c_str());
     status_t res;
 
     // Verify ops permissions
@@ -107,14 +107,14 @@ status_t Camera2ClientBase<TClientBase>::initializeImpl(TProviderPtr providerPtr
 
     if (mDevice == NULL) {
         ALOGE("%s: Camera %s: No device connected",
-                __FUNCTION__, TClientBase::mCameraIdStr.string());
+                __FUNCTION__, TClientBase::mCameraIdStr.c_str());
         return NO_INIT;
     }
 
     res = mDevice->initialize(providerPtr, monitorTags);
     if (res != OK) {
         ALOGE("%s: Camera %s: unable to initialize device: %s (%d)",
-                __FUNCTION__, TClientBase::mCameraIdStr.string(), strerror(-res), res);
+                __FUNCTION__, TClientBase::mCameraIdStr.c_str(), strerror(-res), res);
         return res;
     }
 
@@ -133,8 +133,8 @@ Camera2ClientBase<TClientBase>::~Camera2ClientBase() {
     disconnect();
 
     ALOGI("Closed Camera %s. Client was: %s (PID %d, UID %u)",
-            TClientBase::mCameraIdStr.string(),
-            String8(TClientBase::mClientPackageName).string(),
+            TClientBase::mCameraIdStr.c_str(),
+            String8(TClientBase::mClientPackageName).c_str(),
             mInitialClientPid, TClientBase::mClientUid);
 }
 
@@ -143,13 +143,13 @@ status_t Camera2ClientBase<TClientBase>::dumpClient(int fd,
                                               const Vector<String16>& args) {
     String8 result;
     result.appendFormat("Camera2ClientBase[%s] (%p) PID: %d, dump:\n",
-            TClientBase::mCameraIdStr.string(),
+            TClientBase::mCameraIdStr.c_str(),
             (TClientBase::getRemoteCallback() != NULL ?
                     IInterface::asBinder(TClientBase::getRemoteCallback()).get() : NULL),
             TClientBase::mClientPid);
     result.append("  State: ");
 
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
     // TODO: print dynamic/request section from most recent requests
 
     return dumpDevice(fd, args);
@@ -162,12 +162,12 @@ status_t Camera2ClientBase<TClientBase>::dumpDevice(
     String8 result;
 
     result = "  Device dump:\n";
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
 
     sp<CameraDeviceBase> device = mDevice;
     if (!device.get()) {
         result = "  *** Device is detached\n";
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         return NO_ERROR;
     }
 
@@ -175,7 +175,7 @@ status_t Camera2ClientBase<TClientBase>::dumpDevice(
     if (res != OK) {
         result = String8::format("   Error dumping device: %s (%d)",
                 strerror(-res), res);
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
     }
 
     return NO_ERROR;
@@ -195,7 +195,7 @@ binder::Status Camera2ClientBase<TClientBase>::disconnect() {
     if (callingPid != TClientBase::mClientPid &&
         callingPid != TClientBase::mServicePid) return res;
 
-    ALOGV("Camera %s: Shutting down", TClientBase::mCameraIdStr.string());
+    ALOGV("Camera %s: Shutting down", TClientBase::mCameraIdStr.c_str());
 
     // Before detaching the device, cache the info from current open session.
     // The disconnected check avoids duplication of info and also prevents
@@ -208,7 +208,7 @@ binder::Status Camera2ClientBase<TClientBase>::disconnect() {
 
     CameraService::BasicClient::disconnect();
 
-    ALOGV("Camera %s: Shut down complete", TClientBase::mCameraIdStr.string());
+    ALOGV("Camera %s: Shut down complete", TClientBase::mCameraIdStr.c_str());
 
     return res;
 }
@@ -218,7 +218,7 @@ void Camera2ClientBase<TClientBase>::detachDevice() {
     if (mDevice == 0) return;
     mDevice->disconnect();
 
-    ALOGV("Camera %s: Detach complete", TClientBase::mCameraIdStr.string());
+    ALOGV("Camera %s: Detach complete", TClientBase::mCameraIdStr.c_str());
 }
 
 template <typename TClientBase>
@@ -234,7 +234,7 @@ status_t Camera2ClientBase<TClientBase>::connect(
         ALOGE("%s: Camera %s: Connection attempt from pid %d; "
                 "current locked to pid %d",
                 __FUNCTION__,
-                TClientBase::mCameraIdStr.string(),
+                TClientBase::mCameraIdStr.c_str(),
                 CameraThreadState::getCallingPid(),
                 TClientBase::mClientPid);
         return BAD_VALUE;
@@ -264,7 +264,7 @@ status_t Camera2ClientBase<TClientBase>::notifyActive() {
         status_t res = TClientBase::startCameraStreamingOps();
         if (res != OK) {
             ALOGE("%s: Camera %s: Error starting camera streaming ops: %d", __FUNCTION__,
-                    TClientBase::mCameraIdStr.string(), res);
+                    TClientBase::mCameraIdStr.c_str(), res);
             return res;
         }
         CameraServiceProxyWrapper::logActive(TClientBase::mCameraIdStr);
@@ -283,7 +283,7 @@ void Camera2ClientBase<TClientBase>::notifyIdle(
         status_t res = TClientBase::finishCameraStreamingOps();
         if (res != OK) {
             ALOGE("%s: Camera %s: Error finishing streaming ops: %d", __FUNCTION__,
-                    TClientBase::mCameraIdStr.string(), res);
+                    TClientBase::mCameraIdStr.c_str(), res);
         }
         CameraServiceProxyWrapper::logIdle(TClientBase::mCameraIdStr,
                 requestCount, resultErrorCount, deviceError, streamStats);

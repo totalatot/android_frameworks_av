@@ -219,7 +219,7 @@ void Camera3InputStream::dump(int fd, const Vector<String16> &args) const {
     (void) args;
     String8 lines;
     lines.appendFormat("    Stream[%d]: Input\n", mId);
-    write(fd, lines.string(), lines.size());
+    write(fd, lines.c_str(), lines.size());
 
     Camera3IOStreamBase::dump(fd, args);
 }

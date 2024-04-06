@@ -99,7 +99,7 @@ bool HeicCompositeStream::isHeicCompositeStream(const sp<Surface> &surface) {
     if ((err = anw->query(anw, NATIVE_WINDOW_FORMAT, &format)) != OK) {
         String8 msg = String8::format("Failed to query Surface format: %s (%d)", strerror(-err),
                 err);
-        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
         return false;
     }
 
@@ -107,7 +107,7 @@ bool HeicCompositeStream::isHeicCompositeStream(const sp<Surface> &surface) {
     if ((err = anw->query(anw, NATIVE_WINDOW_DEFAULT_DATASPACE, &dataspace)) != OK) {
         String8 msg = String8::format("Failed to query Surface dataspace: %s (%d)", strerror(-err),
                 err);
-        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        ALOGE("%s: %s", __FUNCTION__, msg.c_str());
         return false;
     }
 

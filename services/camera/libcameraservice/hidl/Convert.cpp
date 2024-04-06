@@ -158,7 +158,7 @@ HCaptureResultExtras convertToHidl(const CaptureResultExtras &captureResultExtra
     hCaptureResultExtras.partialResultCount = captureResultExtras.partialResultCount;
     hCaptureResultExtras.errorStreamId = captureResultExtras.errorStreamId;
     hCaptureResultExtras.errorPhysicalCameraId = hidl_string(String8(
-            captureResultExtras.errorPhysicalCameraId).string());
+            captureResultExtras.errorPhysicalCameraId).c_str());
     return hCaptureResultExtras;
 }
 
@@ -265,7 +265,7 @@ HPhysicalCaptureResultInfo convertToHidl(
     std::shared_ptr<CaptureResultMetadataQueue> &captureResultMetadataQueue) {
     HPhysicalCaptureResultInfo hPhysicalCaptureResultInfo;
     hPhysicalCaptureResultInfo.physicalCameraId =
-        String8(physicalCaptureResultInfo.mPhysicalCameraId).string();
+        String8(physicalCaptureResultInfo.mPhysicalCameraId).c_str();
     const camera_metadata_t *rawMetadata =
         physicalCaptureResultInfo.mPhysicalCameraMetadata.getAndLock();
     // Try using fmq at first.

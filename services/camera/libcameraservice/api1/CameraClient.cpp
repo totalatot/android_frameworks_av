@@ -694,7 +694,7 @@ status_t CameraClient::takePicture(int msgType) {
 
 // set preview/capture parameters - key/value pairs
 status_t CameraClient::setParameters(const String8& params) {
-    LOG1("setParameters (pid %d) (%s)", CameraThreadState::getCallingPid(), params.string());
+    LOG1("setParameters (pid %d) (%s)", CameraThreadState::getCallingPid(), params.c_str());
 
     Mutex::Autolock lock(mLock);
     status_t result = checkPidAndHardware();
@@ -714,7 +714,7 @@ String8 CameraClient::getParameters() const {
     }
 
     String8 params(mHardware->getParameters().flatten());
-    LOG1("getParameters (pid %d) (%s)", CameraThreadState::getCallingPid(), params.string());
+    LOG1("getParameters (pid %d) (%s)", CameraThreadState::getCallingPid(), params.c_str());
     return params;
 }
 

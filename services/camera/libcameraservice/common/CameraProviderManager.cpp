@@ -3272,7 +3272,7 @@ status_t CameraProviderManager::convertToHALStreamCombinationAndCameraIdsLocked(
         camera3::metadataGetter getMetadata =
                 [this](const String8 &id, bool overrideForPerfClass) {
                     CameraMetadata physicalDeviceInfo;
-                    getCameraCharacteristicsLocked(id.string(), overrideForPerfClass,
+                    getCameraCharacteristicsLocked(id.c_str(), overrideForPerfClass,
                                                    &physicalDeviceInfo);
                     return physicalDeviceInfo;
                 };

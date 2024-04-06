@@ -32,7 +32,7 @@ binder::Status H2BCameraServiceListener::onStatusChanged(
   HCameraDeviceStatus hCameraDeviceStatus = convertToHidlCameraDeviceStatus(status);
   CameraStatusAndId cameraStatusAndId;
   cameraStatusAndId.deviceStatus = hCameraDeviceStatus;
-  cameraStatusAndId.cameraId = String8(cameraId).string();
+  cameraStatusAndId.cameraId = String8(cameraId).c_str();
   auto ret = mBase->onStatusChanged(cameraStatusAndId);
   if (!ret.isOk()) {
       ALOGE("%s OnStatusChanged callback failed due to %s",__FUNCTION__,
@@ -52,8 +52,8 @@ binder::Status H2BCameraServiceListener::onPhysicalCameraStatusChanged(
       HCameraDeviceStatus hCameraDeviceStatus = convertToHidlCameraDeviceStatus(status);
       V2_1::PhysicalCameraStatusAndId cameraStatusAndId;
       cameraStatusAndId.deviceStatus = hCameraDeviceStatus;
-      cameraStatusAndId.cameraId = String8(cameraId).string();
-      cameraStatusAndId.physicalCameraId = String8(physicalCameraId).string();
+      cameraStatusAndId.cameraId = String8(cameraId).c_str();
+      cameraStatusAndId.physicalCameraId = String8(physicalCameraId).c_str();
       auto ret = interface2_1->onPhysicalCameraStatusChanged(cameraStatusAndId);
       if (!ret.isOk()) {
         ALOGE("%s OnPhysicalCameraStatusChanged callback failed due to %s",__FUNCTION__,

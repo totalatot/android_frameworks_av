@@ -37,14 +37,14 @@ status_t CameraOfflineSessionClient::initialize(sp<CameraProviderManager>, const
 
     if (mOfflineSession.get() == nullptr) {
         ALOGE("%s: Camera %s: No valid offline session",
-                __FUNCTION__, mCameraIdStr.string());
+                __FUNCTION__, mCameraIdStr.c_str());
         return NO_INIT;
     }
 
     String8 threadName;
     mFrameProcessor = new camera2::FrameProcessorBase(mOfflineSession);
-    threadName = String8::format("Offline-%s-FrameProc", mCameraIdStr.string());
-    mFrameProcessor->run(threadName.string());
+    threadName = String8::format("Offline-%s-FrameProc", mCameraIdStr.c_str());
+    mFrameProcessor->run(threadName.c_str());
 
     mFrameProcessor->registerListener(camera2::FrameProcessorBase::FRAME_PROCESSOR_LISTENER_MIN_ID,
                                       camera2::FrameProcessorBase::FRAME_PROCESSOR_LISTENER_MAX_ID,
@@ -55,7 +55,7 @@ status_t CameraOfflineSessionClient::initialize(sp<CameraProviderManager>, const
     res = mOfflineSession->initialize(weakThis);
     if (res != OK) {
         ALOGE("%s: Camera %s: unable to initialize device: %s (%d)",
-                __FUNCTION__, mCameraIdStr.string(), strerror(-res), res);
+                __FUNCTION__, mCameraIdStr.c_str(), strerror(-res), res);
         return res;
     }
 
@@ -90,11 +90,11 @@ status_t CameraOfflineSessionClient::dumpClient(int fd, const Vector<String16>& 
     String8 result;
 
     result = "  Offline session dump:\n";
-    write(fd, result.string(), result.size());
+    write(fd, result.c_str(), result.size());
 
     if (mOfflineSession.get() == nullptr) {
         result = "  *** Offline session is detached\n";
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
         return NO_ERROR;
     }
 
@@ -104,7 +104,7 @@ status_t CameraOfflineSessionClient::dumpClient(int fd, const Vector<String16>& 
     if (res != OK) {
         result = String8::format("   Error dumping offline session: %s (%d)",
                 strerror(-res), res);
-        write(fd, result.string(), result.size());
+        write(fd, result.c_str(), result.size());
     }
 
     return OK;
@@ -142,7 +142,7 @@ binder::Status CameraOfflineSessionClient::disconnect() {
 
     finishCameraOps();
     ALOGI("%s: Disconnected client for offline camera %s for PID %d", __FUNCTION__,
-            mCameraIdStr.string(), mClientPid);
+            mCameraIdStr.c_str(), mClientPid);
 
     // client shouldn't be able to call into us anymore
     mClientPid = 0;
@@ -187,7 +187,7 @@ status_t CameraOfflineSessionClient::startCameraOps() {
     ATRACE_CALL();
     {
         ALOGV("%s: Start camera ops, package name = %s, client UID = %d",
-              __FUNCTION__, String8(mClientPackageName).string(), mClientUid);
+              __FUNCTION__, String8(mClientPackageName).c_str(), mClientUid);
     }
 
     if (mAppOpsManager != nullptr) {
@@ -203,7 +203,7 @@ status_t CameraOfflineSessionClient::startCameraOps() {
 
         if (res == AppOpsManager::MODE_ERRORED) {
             ALOGI("Offline Camera %s: Access for \"%s\" has been revoked",
-                    mCameraIdStr.string(), String8(mClientPackageName).string());
+                    mCameraIdStr.c_str(), String8(mClientPackageName).c_str());
             return PERMISSION_DENIED;
         }
 
@@ -211,7 +211,7 @@ status_t CameraOfflineSessionClient::startCameraOps() {
         // return MODE_IGNORED. Do not treat such case as error.
         if (!mUidIsTrusted && res == AppOpsManager::MODE_IGNORED) {
             ALOGI("Offline Camera %s: Access for \"%s\" has been restricted",
-                    mCameraIdStr.string(), String8(mClientPackageName).string());
+                    mCameraIdStr.c_str(), String8(mClientPackageName).c_str());
             // Return the same error as for device policy manager rejection
             return -EACCES;
         }

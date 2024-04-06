@@ -66,7 +66,7 @@ void CameraLatencyHistogram::dump(int fd, const char* name) const {
     lines.append(lineBins);
     lines.append(lineBinCounts);
 
-    write(fd, lines.string(), lines.size());
+    write(fd, lines.c_str(), lines.size());
 }
 
 void CameraLatencyHistogram::log(const char* fmt, ...) {
@@ -77,7 +77,7 @@ void CameraLatencyHistogram::log(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     String8 histogramName = String8::formatV(fmt, args);
-    ALOGI("%s (%" PRId64 ") samples:", histogramName.string(), mTotalCount);
+    ALOGI("%s (%" PRId64 ") samples:", histogramName.c_str(), mTotalCount);
     va_end(args);
 
     String8 lineBins, lineBinCounts;
