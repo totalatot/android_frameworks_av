@@ -312,7 +312,7 @@ private:
     status_t isCameraAvailable(const sp<hardware::ICamera>& camera,
                                const sp<ICameraRecordingProxy>& proxy,
                                int32_t cameraId,
-                               const std::string& clientName,
+                               const String16& clientName,
                                uid_t clientUid,
                                pid_t clientPid);
 
